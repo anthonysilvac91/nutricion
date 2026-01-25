@@ -1,0 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+//// ENUMS ////
+
+enum UserRole {
+  ADMIN
+  NUTRITIONIST
+}
+
+enum Sex {
+  MALE
+  FEMALE
+}
+
+enum ActivityLevel {
+  SEDENTARY
+  LIGHT
+  MODERATE
+  ACTIVE
+  VERY_ACTIVE
+}
+
+//// MODELS ////
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(NUTRITIONIST)
+
+  patients Patient[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Patient {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  firstName     String
+  lastName      String
+  sex           Sex
+  birthDate     DateTime
+  activityLevel ActivityLevel
+
+  measurements Measurement[]
+  results      Result[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Measurement {
+  id        String  @id @default(uuid())
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  weightKg Float
+  heightCm Float
+  waistCm  Float?
+
+  measuredAt DateTime
+
+  createdAt DateTime @default(now())
+}
+
+model Result {
+  id        String  @id @default(uuid())
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  bmi      Float
+  bmiClass String
+  tdeeKcal Float
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
