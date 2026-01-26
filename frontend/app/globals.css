@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+:root {
+  /* NutriApp / Nutrium Inspired Palette */
+  --primary: #1DBF73;
+  /* Nutrium Green */
+  --primary-foreground: #ffffff;
+
+  --secondary: #F3F6F8;
+  /* Light Blue/Gray Background */
+  --secondary-foreground: #1DBF73;
+
+  /* Text Colors */
+  --foreground: #3E4C59;
+  /* Dark Slate for heavy text */
+  --muted: #9AA5B1;
+  /* Muted text */
+  --muted-foreground: #6B7280;
+
+  /* Status Colors */
+  --success: #1DBF73;
+  --warning: #F5A623;
+  --danger: #FF4D4D;
+
+  /* Specific UI Colors */
+  --sidebar-bg: #FFFFFF;
+  --topbar-bg: #F3F6F8;
+  /* Blends with body */
+
+  --card: #ffffff;
+  --card-foreground: #3E4C59;
+
+  --border: #E4E7EB;
+  --input: #E4E7EB;
+  --ring: #1DBF73;
+}
+
+@theme inline {
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-card: 12px;
+
+  /* Soft shadows like the image */
+  --box-shadow-card: 0 2px 5px rgba(0, 0, 0, 0.05);
+  --box-shadow-pill: 0 2px 8px rgba(0, 0, 0, 0.08);
+  /* For user pill */
+}
+
+body {
+  background: var(--secondary);
+  /* The light blue-ish background */
+  color: var(--foreground);
+  font-family: 'Inter', system-ui, sans-serif;
+  /* Clean font */
+}
+
+/* Hide Vercel/Next.js Dev Toolbar */
+/* Using important to ensure it overrides any injected styles */
+[data-nextjs-toast],
+[data-nextjs-toast-errors-parent],
+nextjs-portal,
+#vercel-toolbar,
+vercel-live-feedback {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
