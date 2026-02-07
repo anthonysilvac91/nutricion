@@ -1,18 +1,25 @@
 import { PrismaClient, Sex, ActivityLevel, UserRole } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
+
+
 async function main() {
   // 1) Usuario nutricionista
+  const hashed = await bcrypt.hash('123456', 10);
   const user = await prisma.user.upsert({
-    where: { email: 'nutri@demo.cl' },
-    update: {},
-    create: {
-      email: 'nutri@demo.cl',
-      passwordHash: 'demo_hash', // luego lo reemplazamos por bcrypt en Auth
-      role: UserRole.NUTRITIONIST,
-    },
-  });
+  where: { email: 'nutri@demo.cl' },
+  update: {
+    passwordHash: hashed,
+    role: UserRole.NUTRITIONIST,
+  },
+  create: {
+    email: 'nutri@demo.cl',
+    passwordHash: hashed,
+    role: UserRole.NUTRITIONIST,
+  },
+});
 
   // 2) Paciente
   const patient = await prisma.patient.create({
