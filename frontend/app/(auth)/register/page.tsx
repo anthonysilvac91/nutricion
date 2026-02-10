@@ -10,23 +10,23 @@ import { Input } from "@/components/ui/Input"
 import { Label } from "@/components/ui/Label"
 import { Activity } from "lucide-react"
 
-export default function LoginPage() {
+export default function RegisterPage() {
     const router = useRouter()
     const [loading, setLoading] = useState(false)
 
-    const handleLogin = async (e: React.FormEvent) => {
+    const handleRegister = async (e: React.FormEvent) => {
         e.preventDefault()
         setLoading(true)
         try {
             const email = (e.target as any).email.value
             const password = (e.target as any).password.value
-            // We pass both but api.login mock only checks email existence for demo
-            const { token } = await api.login(email, password)
+
+            const { token } = await api.register(email, password)
 
             localStorage.setItem("token", token)
             router.push("/dashboard")
-        } catch (err) {
-            alert("Error al ingresar")
+        } catch (err: any) {
+            alert(err.message || "Error al registrarse")
         } finally {
             setLoading(false)
         }
@@ -42,28 +42,28 @@ export default function LoginPage() {
                     <div className="mx-auto bg-primary/10 p-3 rounded-full w-fit mb-2">
                         <Activity className="h-8 w-8 text-primary" />
                     </div>
-                    <CardTitle className="text-2xl font-bold text-gray-800">NutriApp</CardTitle>
-                    <p className="text-sm text-muted-foreground">Ingresa a tu cuenta profesional</p>
+                    <CardTitle className="text-2xl font-bold text-gray-800">Crear cuenta</CardTitle>
+                    <p className="text-sm text-muted-foreground">Únete a NutriApp profesional</p>
                 </CardHeader>
                 <CardContent className="pt-0 pb-8 px-8">
-                    <form onSubmit={handleLogin} className="space-y-4">
+                    <form onSubmit={handleRegister} className="space-y-4">
                         <div className="space-y-2">
                             <Label htmlFor="email">Email</Label>
-                            <Input id="email" name="email" type="email" placeholder="nombre@ejemplo.com" required defaultValue="demo@nutriapp.com" className="h-11" />
+                            <Input id="email" name="email" type="email" placeholder="nombre@ejemplo.com" required className="h-11" />
                         </div>
                         <div className="space-y-2">
                             <Label htmlFor="password">Contraseña</Label>
-                            <Input id="password" name="password" type="password" required defaultValue="password" className="h-11" />
+                            <Input id="password" name="password" type="password" required className="h-11" minLength={6} />
                         </div>
                         <Button type="submit" className="w-full h-11 text-base font-semibold mt-4 shadow-lg shadow-primary/20" disabled={loading}>
-                            {loading ? "Ingresando..." : "Ingresar"}
+                            {loading ? "Creando cuenta..." : "Registrarse"}
                         </Button>
                     </form>
 
                     <div className="mt-6 text-center text-sm">
-                        <span className="text-muted-foreground">¿No tienes cuenta? </span>
-                        <Link href="/register" className="text-primary font-semibold hover:underline">
-                            Regístrate gratis
+                        <span className="text-muted-foreground">¿Ya tienes cuenta? </span>
+                        <Link href="/login" className="text-primary font-semibold hover:underline">
+                            Ingresa aquí
                         </Link>
                     </div>
                 </CardContent>

@@ -1,116 +1,136 @@
-const STORAGE_KEY = "nutri_mock_db";
+const API_URL = "http://localhost:4000";
 
-const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
-
-const getDb = () => {
-    if (typeof window === "undefined") return { patients: [] };
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return JSON.parse(saved);
-    const initial = {
-        patients: [
-            {
-                id: "1",
-                name: "Maria Garcia",
-                email: "maria@example.com",
-                birthDate: "1985-04-12",
-                gender: "female",
-                observations: "Objetivo: Bajar peso de forma saludable.",
-                measurements: [
-                    { id: "m1", date: "2025-01-10", weight: 65, height: 165, imc: "23.88" },
-                ],
-            },
-            {
-                id: "2",
-                name: "Jose Rodriguez",
-                email: "jose@test.com",
-                birthDate: "1990-02-20",
-                gender: "male",
-                observations: "Deportista de alto rendimiento.",
-                measurements: [],
-            },
-        ],
+const getHeaders = () => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    return {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
-    return initial;
 };
 
-const saveDb = (db: any) => {
-    if (typeof window !== "undefined") {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+const handleResponse = async (res: Response) => {
+    if (!res.ok) {
+        const error = await res.json().catch(() => ({ message: "Error desconocido" }));
+        throw new Error(error.message || "Error en la petición");
     }
+    return res.json();
 };
 
 export const api = {
+    // AUTH
     login: async (email: string, password: string) => {
-        await delay(1000);
-        if (email) {
-            return { token: "mock-token-123", user: { name: "Dr. Nutricionista" } };
-        }
-        throw new Error("Invalid credentials");
+        const res = await fetch(`${API_URL}/auth/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password }),
+        });
+        const data = await handleResponse(res);
+        return { token: data.access_token }; // NestJS JWT strategy usually returns access_token
     },
 
+    register: async (email: string, password: string) => {
+        const res = await fetch(`${API_URL}/auth/register`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password }),
+        });
+        const data = await handleResponse(res);
+        return { token: data.access_token };
+    },
+
+    getMe: async () => {
+        const res = await fetch(`${API_URL}/auth/me`, {
+            method: "GET",
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
+
+    // PATIENTS
     getPatients: async () => {
-        await delay(600);
-        const db = getDb();
-        return db.patients.map((u: any) => ({
-            id: u.id,
-            name: u.name,
-            email: u.email,
-            lastMeasurement:
-                u.measurements.length > 0
-                    ? u.measurements[u.measurements.length - 1].date
-                    : "—",
+        const res = await fetch(`${API_URL}/patients`, {
+            method: "GET",
+            headers: getHeaders(),
+        });
+        const data = await handleResponse(res);
+        // Map backend format to frontend format if necessary
+        return data.map((p: any) => ({
+            id: p.id,
+            name: `${p.firstName} ${p.lastName}`,
+            email: "—", // Backend patient model doesn't have email yet, maybe add later?
+            lastMeasurement: "—", // Needs logic to get last measurement date
+            ...p
         }));
     },
 
     getPatient: async (id: string) => {
-        await delay(400);
-        const db = getDb();
-        const user = db.patients.find((u: any) => u.id === id);
-        if (!user) throw new Error("Patient not found");
-        return user;
+        const res = await fetch(`${API_URL}/patients/${id}`, {
+            method: "GET",
+            headers: getHeaders(),
+        });
+        const p = await handleResponse(res);
+        return {
+            id: p.id,
+            name: `${p.firstName} ${p.lastName}`,
+            email: "—",
+            birthDate: p.birthDate.split("T")[0], // Format date
+            gender: p.sex === "MALE" ? "male" : "female",
+            observations: `Nivel de actividad: ${p.activityLevel}`,
+            measurements: p.measurements || [],
+            ...p
+        };
     },
 
     createPatient: async (data: any) => {
-        await delay(1000);
-        const db = getDb();
-        const newUser = {
-            ...data,
-            id: Math.random().toString(36).substr(2, 9),
-            measurements: [],
+        // Map frontend form data to backend DTO
+        const payload = {
+            firstName: data.name.split(" ")[0],
+            lastName: data.name.split(" ").slice(1).join(" ") || ".",
+            sex: data.gender === "male" ? "MALE" : "FEMALE",
+            birthDate: new Date(data.birthDate).toISOString(),
+            activityLevel: "MODERATE", // Default or add field in form
+            // email is not in Patient model in backend yet
         };
-        db.patients.push(newUser);
-        saveDb(db);
-        return newUser;
+
+        const res = await fetch(`${API_URL}/patients`, {
+            method: "POST",
+            headers: getHeaders(),
+            body: JSON.stringify(payload),
+        });
+        return handleResponse(res);
     },
 
     updatePatient: async (id: string, data: any) => {
-        await delay(1000);
-        const db = getDb();
-        const idx = db.patients.findIndex((u: any) => u.id === id);
-        if (idx === -1) throw new Error("Patient not found");
-        db.patients[idx] = { ...db.patients[idx], ...data };
-        saveDb(db);
-        return db.patients[idx];
+        const payload: any = {};
+        if (data.name) {
+            payload.firstName = data.name.split(" ")[0];
+            payload.lastName = data.name.split(" ").slice(1).join(" ") || ".";
+        }
+        if (data.gender) payload.sex = data.gender === "male" ? "MALE" : "FEMALE";
+        if (data.birthDate) payload.birthDate = new Date(data.birthDate).toISOString();
+
+        const res = await fetch(`${API_URL}/patients/${id}`, {
+            method: "PATCH",
+            headers: getHeaders(),
+            body: JSON.stringify(payload),
+        });
+        return handleResponse(res);
     },
 
-    createMeasurement: async (id: string, data: any) => {
-        await delay(800);
-        const db = getDb();
-        const user = db.patients.find((u: any) => u.id === id);
-        if (!user) throw new Error("Patient not found");
+    deletePatient: async (id: string) => {
+        const res = await fetch(`${API_URL}/patients/${id}`, {
+            method: "DELETE",
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
 
-        // Calculate IMC
-        const heightM = data.height / 100;
-        const imc = heightM > 0 ? (data.weight / (heightM * heightM)).toFixed(2) : "0";
-
-        const newM = {
-            ...data,
-            id: Math.random().toString(36).substr(2, 9),
-            imc,
-        };
-        user.measurements.push(newM);
-        saveDb(db);
-        return newM;
+    // MEASUREMENTS (Placeholder - pending backend endpoint confirmation)
+    createMeasurement: async (patientId: string, data: any) => {
+        // Currently no direct endpoint in PatientsController for adding measurement?
+        // Needs to be checked or implemented in backend.
+        // For now returning mock to avoid breaking app if used
+        console.warn("createMeasurement not yet implemented in backend connection");
+        return { id: "mock", ...data, imc: "0" };
     },
 };

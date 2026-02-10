@@ -92,7 +92,20 @@ export default function PatientsPage() {
                                                         <Edit className="h-4 w-4" />
                                                     </button>
                                                 </Link>
-                                                <button className="p-1.5 text-gray-400 hover:text-red-500 transition-colors" title="Eliminar">
+                                                <button
+                                                    onClick={async () => {
+                                                        if (confirm("¿Estás seguro de eliminar este paciente?")) {
+                                                            try {
+                                                                await api.deletePatient(patient.id);
+                                                                loadData();
+                                                            } catch (e) {
+                                                                alert("Error al eliminar");
+                                                            }
+                                                        }
+                                                    }}
+                                                    className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"
+                                                    title="Eliminar"
+                                                >
                                                     <Trash className="h-4 w-4" />
                                                 </button>
                                             </div>
