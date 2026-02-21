@@ -1,0 +1,40 @@
+
+🚀 Puesta en marcha
+1. Iniciar base de datos con Docker
+
+Desde la raíz del proyecto ejecuta:
+
+docker compose up -d
+
+
+Este comando levantará la base de datos PostgreSQL necesaria para el backend.
+
+2. Iniciar Backend (NestJS)
+
+Desde la carpeta del backend:
+
+npm run start:dev
+
+
+El backend se iniciará en modo desarrollo y quedará listo para recibir solicitudes.
+
+3. Iniciar Frontend (Next.js)
+
+Desde la carpeta del frontend:
+
+npm run dev
+
+
+El frontend estará disponible en el navegador y se comunicará con la API del backend.
+
+🗄️ Base de datos
+Validar y administrar datos con Prisma Studio
+
+Para visualizar y gestionar los datos de la base de datos PostgreSQL, ejecuta:
+
+npx prisma studio
+
+
+Esto abrirá una interfaz web donde podrás inspeccionar y editar los registros.
+
+
