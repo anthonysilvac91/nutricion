@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtGuard } from '../auth/jwt.guard';
+import { SubscriptionWriteGuard } from '../auth/guards/subscription-write.guard';
 import { CreatePatientDto } from './dto/create-patient.dto';
 import { UpdatePatientDto } from './dto/update-patient.dto';
 import { PatientsService } from './patients.service';
@@ -10,10 +11,11 @@ import { PatientsService } from './patients.service';
 @UseGuards(JwtGuard)
 @Controller('patients') // BASE ROUTE: /patients
 export class PatientsController {
-  constructor(private readonly patients: PatientsService) {}
+  constructor(private readonly patients: PatientsService) { }
 
   // POST /patients
   @ApiOperation({ summary: 'Crear paciente (del usuario autenticado)' })
+  @UseGuards(SubscriptionWriteGuard)
   @Post()
   create(@Req() req: any, @Body() dto: CreatePatientDto) {
     return this.patients.create(req.user.sub, dto);
@@ -35,6 +37,7 @@ export class PatientsController {
 
   // PATCH /patients/:id
   @ApiOperation({ summary: 'Actualizar paciente (si pertenece al usuario)' })
+  @UseGuards(SubscriptionWriteGuard)
   @Patch(':id')
   update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdatePatientDto) {
     return this.patients.update(req.user.sub, id, dto);
@@ -42,6 +45,7 @@ export class PatientsController {
 
   // DELETE /patients/:id
   @ApiOperation({ summary: 'Eliminar paciente (si pertenece al usuario)' })
+  @UseGuards(SubscriptionWriteGuard)
   @Delete(':id')
   remove(@Req() req: any, @Param('id') id: string) {
     return this.patients.remove(req.user.sub, id);

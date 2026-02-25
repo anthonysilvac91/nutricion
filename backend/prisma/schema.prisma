@@ -9,6 +9,13 @@ datasource db {
 
 //// ENUMS ////
 
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  EXPIRED
+  BLOCKED
+}
+
 enum UserRole {
   ADMIN
   NUTRITIONIST
@@ -34,6 +41,9 @@ model User {
   email        String   @unique
   passwordHash String
   role         UserRole @default(NUTRITIONIST)
+
+  subscriptionStatus SubscriptionStatus @default(TRIALING)
+  trialEndsAt        DateTime?
 
   patients Patient[]
 
