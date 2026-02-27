@@ -7,10 +7,18 @@ import { cn } from "@/lib/utils"
 const Sidebar = () => {
     const pathname = usePathname()
 
+    // Mock Role - En un caso real usarías un hook (e.g const { user } = useAuth())
+    const role = "ADMIN"
+
     const navItems = [
         { href: "/dashboard", label: "Página inicial", icon: LayoutDashboard },
         { href: "/patients", label: "Pacientes", icon: Users },
     ]
+
+    // Solo se muestra al ADMIN
+    if (role === "ADMIN") {
+        navItems.push({ href: "/admin/nutritionists", label: "Nutricionistas", icon: Users }) // O Shield/Admin icon
+    }
 
     return (
         <aside className="hidden h-screen w-[220px] flex-col bg-white border-r border-transparent md:flex fixed left-0 top-0 z-50 shadow-[2px_0_10px_rgba(0,0,0,0.02)]">
