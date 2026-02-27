@@ -1,9 +1,10 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags, ApiOkResponse } from '@nestjs/swagger';
 import { JwtGuard } from '../auth/jwt.guard';
 import { SubscriptionWriteGuard } from '../auth/guards/subscription-write.guard';
 import { CreatePatientDto } from './dto/create-patient.dto';
 import { UpdatePatientDto } from './dto/update-patient.dto';
+import { FindAllPatientsDto } from './dto/find-all-patients.dto';
 import { PatientsService } from './patients.service';
 
 @ApiTags('Patients')
@@ -22,10 +23,27 @@ export class PatientsController {
   }
 
   // GET /patients
-  @ApiOperation({ summary: 'Listar pacientes del usuario autenticado' })
+  @ApiOperation({ summary: 'Listar pacientes del usuario autenticado (con paginación y búsqueda)' })
+  @ApiOkResponse({
+    description: 'Devuelve la lista de pacientes paginada',
+    schema: {
+      properties: {
+        data: { type: 'array', items: { type: 'object' } },
+        meta: {
+          type: 'object',
+          properties: {
+            total: { type: 'number' },
+            page: { type: 'number' },
+            pageSize: { type: 'number' },
+            totalPages: { type: 'number' },
+          },
+        },
+      },
+    },
+  })
   @Get()
-  findAll(@Req() req: any) {
-    return this.patients.findAll(req.user.sub);
+  findAll(@Req() req: any, @Query() query: FindAllPatientsDto) {
+    return this.patients.findAll(req.user.sub, query);
   }
 
   // GET /patients/:id

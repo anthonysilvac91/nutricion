@@ -6,20 +6,49 @@ const prisma = new PrismaClient();
 
 
 async function main() {
-  // 1) Usuario nutricionista
+  console.log('Running Seed...');
+
+  // 1) Administrador principal (Admin)
+  const adminEmail = process.env.ADMIN_EMAIL;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+
+  if (!adminEmail || !adminPassword) {
+    console.warn('⚠️  ADMIN_EMAIL o ADMIN_PASSWORD no configurados en .env. Omitiendo la creación del Admin principal.');
+  } else {
+    const existingAdmin = await prisma.user.findFirst({
+      where: { role: UserRole.ADMIN },
+    });
+
+    if (existingAdmin) {
+      console.log(`ℹ️  Ya existe un administrador en el sistema (${existingAdmin.email}). Omitiendo creación.`);
+    } else {
+      const hashedAdminPassword = await bcrypt.hash(adminPassword, 10);
+      const admin = await prisma.user.create({
+        data: {
+          email: adminEmail.toLowerCase().trim(),
+          passwordHash: hashedAdminPassword,
+          role: UserRole.ADMIN,
+          subscriptionStatus: 'ACTIVE',
+        },
+      });
+      console.log(`✅ Administrador principal creado exitosamente: ${admin.email}`);
+    }
+  }
+
+  // 2) Usuario nutricionista
   const hashed = await bcrypt.hash('123456', 10);
   const user = await prisma.user.upsert({
-  where: { email: 'nutri@demo.cl' },
-  update: {
-    passwordHash: hashed,
-    role: UserRole.NUTRITIONIST,
-  },
-  create: {
-    email: 'nutri@demo.cl',
-    passwordHash: hashed,
-    role: UserRole.NUTRITIONIST,
-  },
-});
+    where: { email: 'nutri@demo.cl' },
+    update: {
+      passwordHash: hashed,
+      role: UserRole.NUTRITIONIST,
+    },
+    create: {
+      email: 'nutri@demo.cl',
+      passwordHash: hashed,
+      role: UserRole.NUTRITIONIST,
+    },
+  });
 
   // 2) Paciente
   const patient = await prisma.patient.create({
