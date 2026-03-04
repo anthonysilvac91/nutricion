@@ -6,6 +6,7 @@ import { api } from "@/lib/api"
 import { Button } from "@/components/ui/Button"
 import { Card } from "@/components/ui/Card"
 import { NewPatientModal } from "@/components/patients/NewPatientModal"
+import { MeasurementsTab } from "@/components/patients/measurements/MeasurementsTab"
 
 export default function PatientProfilePage() {
     const params = useParams()
@@ -282,8 +283,8 @@ export default function PatientProfilePage() {
                             key={tab.key}
                             onClick={() => setActiveTab(tab.key)}
                             className={`pb-2 text-xs font-bold border-b-2 transition-colors uppercase tracking-wide cursor-pointer ${activeTab === tab.key
-                                    ? "border-[#1DBF73] text-[#1DBF73]"
-                                    : "border-transparent text-gray-400 hover:text-gray-600 hover:border-gray-200"
+                                ? "border-[#1DBF73] text-[#1DBF73]"
+                                : "border-transparent text-gray-400 hover:text-gray-600 hover:border-gray-200"
                                 }`}
                         >
                             {tab.label}
@@ -295,8 +296,9 @@ export default function PatientProfilePage() {
             {/* Tab Content */}
             <div className="flex-1 min-h-0 overflow-y-auto animate-in fade-in duration-300 pb-2 pr-1">
                 {activeTab === TAB_KEYS.INFO && <InfoTab />}
+                {activeTab === TAB_KEYS.MEASUREMENTS && <MeasurementsTab patientId={id} />}
                 {(activeTab === TAB_KEYS.ANAMNESIS || activeTab === TAB_KEYS.MEAL_PLAN) && <PlaceholderTab label="🚀 Próximamente" />}
-                {(activeTab === TAB_KEYS.MEASUREMENTS || activeTab === TAB_KEYS.PLANNING || activeTab === TAB_KEYS.REPORTS) && (
+                {(activeTab === TAB_KEYS.PLANNING || activeTab === TAB_KEYS.REPORTS) && (
                     <PlaceholderTab label="🛠️ En desarrollo" />
                 )}
             </div>

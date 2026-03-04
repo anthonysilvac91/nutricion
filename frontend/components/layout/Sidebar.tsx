@@ -3,12 +3,19 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { LayoutDashboard, Users, LogOut, Sprout } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useEffect, useState } from "react"
+import { getUserFromToken } from "@/lib/auth"
 
 const Sidebar = () => {
     const pathname = usePathname()
+    const [role, setRole] = useState<string | null>(null)
 
-    // Mock Role - En un caso real usarías un hook (e.g const { user } = useAuth())
-    const role = "ADMIN"
+    useEffect(() => {
+        const user = getUserFromToken()
+        if (user) {
+            setRole(user.role)
+        }
+    }, [])
 
     const navItems = [
         { href: "/dashboard", label: "Página inicial", icon: LayoutDashboard },

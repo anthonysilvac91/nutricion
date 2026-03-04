@@ -11,17 +11,14 @@ import { NutritionistFormModal } from "@/components/admin/nutritionists/Nutritio
 import { NutritionistEditDrawer } from "@/components/admin/nutritionists/NutritionistEditDrawer"
 
 import { Nutritionist, nutritionistsService } from "@/services/nutritionistsService"
-
-// Temporary Mock Hook/Role check (Since MVP requests to simulate Role from frontend)
-const useMockAuth = () => {
-    // Para probar: Cambia 'ADMIN' por 'NUTRITIONIST' y verás la página de error
-    return { role: "ADMIN" }
-}
+import { getUserFromToken } from "@/lib/auth"
 
 export default function AdminNutritionistsPage() {
     const router = useRouter()
-    const { role } = useMockAuth()
+    const [role, setRole] = useState<string | null>(null)
+    const [isRoleChecked, setIsRoleChecked] = useState(false)
 
+    // Other states
     const [nutritionists, setNutritionists] = useState<Nutritionist[]>([])
     const [total, setTotal] = useState(0)
     const [isLoading, setIsLoading] = useState(true)
@@ -50,6 +47,15 @@ export default function AdminNutritionistsPage() {
             setIsLoading(false)
         }
     }
+
+    // Effect for checking authentication first
+    useEffect(() => {
+        const user = getUserFromToken()
+        if (user) {
+            setRole(user.role)
+        }
+        setIsRoleChecked(true)
+    }, [])
 
     // Effect for fetching logic - triggers when filters or page changes
     useEffect(() => {

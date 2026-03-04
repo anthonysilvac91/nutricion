@@ -1,16 +1,21 @@
 "use client"
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { ExternalLink, Plus, Edit, Trash, Eye, Mail } from "lucide-react"
+import { useRouter } from "next/navigation"
+import { ExternalLink, Plus, Edit, Trash, Eye, Mail, ShieldAlert } from "lucide-react"
 import { api } from "@/lib/api"
 import { Card } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
 import { NewPatientModal } from "@/components/patients/NewPatientModal"
+import { getUserFromToken } from "@/lib/auth"
 
 export default function PatientsPage() {
+    const router = useRouter()
     const [patients, setPatients] = useState<any[]>([])
     const [loading, setLoading] = useState(true)
     const [isModalOpen, setIsModalOpen] = useState(false)
+    const [role, setRole] = useState<string | null>(null)
+    const [isRoleChecked, setIsRoleChecked] = useState(false)
 
     const loadData = async () => {
         try {
@@ -24,8 +29,33 @@ export default function PatientsPage() {
     }
 
     useEffect(() => {
-        loadData()
+        const user = getUserFromToken()
+        if (user) {
+            setRole(user.role)
+        }
+        setIsRoleChecked(true)
+        // If it's an admin, we don't even call loadData
+        if (user?.role !== "ADMIN") {
+            loadData()
+        }
     }, [])
+
+    if (!isRoleChecked) return null;
+
+    if (role === "ADMIN") {
+        return (
+            <div className="flex flex-col items-center justify-center min-h-[60vh] text-center max-w-md mx-auto">
+                <div className="h-16 w-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mb-6">
+                    <ShieldAlert className="h-8 w-8" />
+                </div>
+                <h1 className="text-2xl font-bold text-gray-900 mb-2">Acceso Denegado</h1>
+                <p className="text-gray-500 mb-8">Los administradores no tienen acceso al módulo de pacientes de los nutricionistas.</p>
+                <Button onClick={() => router.push("/dashboard")} className="w-full">
+                    Volver al inicio
+                </Button>
+            </div>
+        )
+    }
 
     return (
         <div className="space-y-6">

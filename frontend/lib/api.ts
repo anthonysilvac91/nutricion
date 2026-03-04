@@ -52,9 +52,12 @@ export const api = {
             method: "GET",
             headers: getHeaders(),
         });
-        const data = await handleResponse(res);
+        const responseData = await handleResponse(res);
         // Map backend format to frontend format if necessary
-        return data.map((p: any) => ({
+        // Handle the paginated response format: { data: [...], meta: {...} }
+        const patientsList = Array.isArray(responseData.data) ? responseData.data : (Array.isArray(responseData) ? responseData : []);
+
+        return patientsList.map((p: any) => ({
             id: p.id,
             name: `${p.firstName} ${p.lastName}`,
             email: "—", // Backend patient model doesn't have email yet, maybe add later?
