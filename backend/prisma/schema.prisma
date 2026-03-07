@@ -64,6 +64,7 @@ model Patient {
 
   measurements Measurement[]
   results      Result[]
+  assessments  Assessment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -96,4 +97,128 @@ model Result {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// ----------------------------------------------------------------------
+// 1. CATÁLOGOS FORMALES (Diccionarios base de la aplicación)
+// ----------------------------------------------------------------------
+
+enum MeasurementGroup {
+  BASIC
+  COMPOSITION
+  SKINFOLD
+  GIRTH
+  CLINICAL_MARKER
+}
+
+enum MetricCategory {
+  COMPOSITION
+  INDEX
+  DIAGNOSTIC
+  ENERGY_REQUIREMENT
+}
+
+model MeasurementDefinition {
+  id          String           @id
+  group       MeasurementGroup
+  name        String
+  unit        String?
+  description String?
+  isActive    Boolean          @default(true)
+
+  records MeasurementRecord[]
+}
+
+model MetricDefinition {
+  id          String         @id
+  name        String
+  category    MetricCategory
+  description String?
+  isActive    Boolean        @default(true)
+
+  results CalculatedResult[]
+}
+
+// ----------------------------------------------------------------------
+// 2. NÚCLEO TRANSACCIONAL (Evaluación)
+// ----------------------------------------------------------------------
+
+enum AssessmentStatus {
+  DRAFT
+  COMPLETED
+  ARCHIVED
+}
+
+model Assessment {
+  id        String           @id @default(uuid())
+  patientId String
+  patient   Patient          @relation(fields: [patientId], references: [id])
+  date      DateTime
+  status    AssessmentStatus @default(DRAFT)
+
+  ageAtAssessmentMonths Int?
+  populationGroup       String?
+  specialProfile        String?
+  clinicalProtocol      String?
+  protocolVersion       String?
+
+  measurements MeasurementRecord[]
+  results      CalculatedResult[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MeasurementRecord {
+  id           String     @id @default(uuid())
+  assessmentId String
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  definitionId String
+  definition   MeasurementDefinition @relation(fields: [definitionId], references: [id])
+
+  numericValue   Float?
+  stringValue    String?
+  metadataAsJson Json?
+
+  measuredBy String?
+  deviceUsed String?
+
+  @@unique([assessmentId, definitionId])
+}
+
+// ----------------------------------------------------------------------
+// 3. CAPA DE RESULTADOS
+// ----------------------------------------------------------------------
+
+enum ResultStatus {
+  CALCULATED
+  MISSING_DATA
+  NOT_APPLICABLE
+  PENDING_RULE
+}
+
+model CalculatedResult {
+  id           String     @id @default(uuid())
+  assessmentId String
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  metricId String
+  metric   MetricDefinition @relation(fields: [metricId], references: [id])
+
+  numericValue   Float?
+  stringValue    String?
+  metadataAsJson Json?
+
+  status ResultStatus @default(CALCULATED)
+
+  statusCode  String?
+  statusLabel String?
+
+  formulaUsed      String?
+  formulaVersion   String?
+  referenceTableId String?
+  engineVersion    String?
+
+  @@unique([assessmentId, metricId])
 }

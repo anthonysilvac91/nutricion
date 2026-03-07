@@ -84,6 +84,14 @@ export const api = {
         };
     },
 
+    getPatientSummary: async (id: string) => {
+        const res = await fetch(`${API_URL}/patients/${id}/summary`, {
+            method: "GET",
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
+
     createPatient: async (data: any) => {
         // Map frontend form data to backend DTO
         const payload = {

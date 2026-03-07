@@ -97,4 +97,109 @@ export class PatientsService {
 
     return { message: 'Patient removed successfully' };
   }
+
+  // --- Endpoints Consolidados de Fase 3 (Lectura en base a Assessments) ---
+
+  async getSummary(userId: string, id: string) {
+    // Validar pertenencia y existencia
+    const patient = await this.findOne(userId, id);
+
+    // Buscar la última evaluación usando orderBy date decendente
+    const latestAssessment = await this.prisma.assessment.findFirst({
+      where: { patientId: id, status: 'COMPLETED' },
+      orderBy: { date: 'desc' },
+      include: {
+        measurements: true,
+        results: true,
+      }
+    });
+
+    // Calcular edad
+    const ageMs = Date.now() - patient.birthDate.getTime();
+    const ageYears = Math.floor(ageMs / (1000 * 60 * 60 * 24 * 365.25));
+
+    // Estructurar respuesta base
+    const summary = {
+      patientId: patient.id,
+      demographics: { ageYears, sex: patient.sex },
+      currentClinicalProfile: 'STANDARD',
+      latestVitals: {},
+      flags: [] as string[]
+    };
+
+    if (latestAssessment) {
+      summary.currentClinicalProfile = `${latestAssessment.populationGroup}_${latestAssessment.specialProfile}`;
+
+      const weightRec = latestAssessment.measurements.find(m => m.definitionId === 'm_weight');
+      if (weightRec && weightRec.numericValue) {
+        summary.latestVitals['weight'] = {
+          value: weightRec.numericValue,
+          date: latestAssessment.date,
+          trend: "STABLE" // MOCKED for now due to lack of historical calculation 
+        };
+      }
+
+      const bmiResult = latestAssessment.results.find(r => r.metricId === 'BMI');
+      if (bmiResult) {
+        summary.latestVitals['bmi'] = { value: bmiResult.numericValue, date: latestAssessment.date };
+        if (bmiResult.statusCode === 'OVERWEIGHT' || bmiResult.statusCode === 'OBESE') {
+          summary.flags.push('OVERWEIGHT_RISK');
+        }
+      }
+    }
+
+    return summary;
+  }
+
+  async getPlanningContext(userId: string, id: string) {
+    const patient = await this.findOne(userId, id);
+
+    const latestAssessment = await this.prisma.assessment.findFirst({
+      where: { patientId: id, status: 'COMPLETED' },
+      orderBy: { date: 'desc' },
+      include: {
+        results: true,
+      }
+    });
+
+    // Mapeo inicial (con mocks parciales listos para Fase 3 avanzada)
+    const context = {
+      patientId: patient.id,
+      latestAssessmentId: latestAssessment?.id || null,
+      resolvedProfile: {
+        ageGroup: latestAssessment?.populationGroup || 'ADULT',
+        activityProfile: patient.activityLevel,
+        targetAudience: 'GENERAL'
+      },
+      availableData: {
+        tdeeKcal: null as number | null,
+        proteinNeedsGrams: null as number | null
+      },
+      clinicalAlerts: [] as any[],
+      missingRequirements: [] as string[]
+    };
+
+    if (latestAssessment) {
+      // Intentar popular availableData de cálculos reales
+      const bmiResult = latestAssessment.results.find(r => r.metricId === 'BMI');
+      if (bmiResult && (bmiResult.statusCode === 'UNDERWEIGHT' || bmiResult.statusCode === 'OVERWEIGHT')) {
+        context.clinicalAlerts.push({
+          metric: 'BMI',
+          alertType: 'WARNING',
+          message: `Paciente presenta un estado de: ${bmiResult.statusLabel || bmiResult.statusCode}`
+        });
+      }
+
+      const tdeeResult = latestAssessment.results.find(r => r.metricId === 'TDEE');
+      if (tdeeResult && tdeeResult.numericValue) {
+        context.availableData.tdeeKcal = tdeeResult.numericValue;
+      } else {
+        context.missingRequirements.push('ENERGY_REQUIREMENT_MISSING');
+      }
+    } else {
+      context.missingRequirements.push('NO_COMPLETED_ASSESSMENT');
+    }
+
+    return context;
+  }
 }

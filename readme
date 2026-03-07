@@ -1,10 +1,31 @@
+iniciar docker: sudo systemctl start docker
+apagar contenedor docker: docker compose down
+apagar docker: sudo systemctl stop docker
+
+proyecto en pc nueva
+
+verificar node: node -v
+npm -v
+instalar si no esta: 
+1. curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+2. sudo apt install -y nodejs
+
+cd backend
+npm install
+npx prisma generate
+npx prisma migrate dev
+npm run start:dev
+
+cd frontend
+npm install
+npm run dev
 
 🚀 Puesta en marcha
 1. Iniciar base de datos con Docker
 
 Desde la raíz del proyecto ejecuta:
 
-docker compose up -d
+sudo docker compose up -d
 
 
 Este comando levantará la base de datos PostgreSQL necesaria para el backend.

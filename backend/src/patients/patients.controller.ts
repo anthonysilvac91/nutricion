@@ -46,6 +46,20 @@ export class PatientsController {
     return this.patients.findAll(req.user.sub, query);
   }
 
+  // GET /patients/:id/summary
+  @ApiOperation({ summary: 'Obtener un resumen estable del paciente' })
+  @Get(':id/summary')
+  getSummary(@Req() req: any, @Param('id') id: string) {
+    return this.patients.getSummary(req.user.sub, id);
+  }
+
+  // GET /patients/:id/planning-context
+  @ApiOperation({ summary: 'Obtener el contexto clínico digerido para Planificación' })
+  @Get(':id/planning-context')
+  getPlanningContext(@Req() req: any, @Param('id') id: string) {
+    return this.patients.getPlanningContext(req.user.sub, id);
+  }
+
   // GET /patients/:id
   @ApiOperation({ summary: 'Obtener un paciente (si pertenece al usuario)' })
   @Get(':id')

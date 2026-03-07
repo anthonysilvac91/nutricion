@@ -107,54 +107,96 @@ const generateMockRecords = () => {
 
 let mockRecords: MeasurementRecord[] = generateMockRecords();
 
+// Retirada gradual: mantenemos las definiciones mockeadas por ahora, 
+// a la espera de un endpoint de diccionarios en próximas fases.
 export const measurementsService = {
     getDefinitions: async (): Promise<MeasurementDefinition[]> => {
         return new Promise(resolve => setTimeout(() => resolve([...mockDefinitions]), 400));
     },
 
     getPatientRecords: async (patientId: string): Promise<MeasurementRecord[]> => {
-        // En una app real filtraríamos por patientId real, aquí devolveremos todo el mock si hay paciente
-        return new Promise(resolve => setTimeout(() => {
-            const records = mockRecords
-                // .filter(r => r.patientId === patientId) // Descomentar en entorno real
-                .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-            resolve(records);
-        }, 300));
+        // MIGRACIÓN: Ahora sí consumimos el backend real usando fetch
+        try {
+            const token = localStorage.getItem('token') || '';
+            const res = await fetch(`http://localhost:3000/patients/${patientId}/assessments/latest`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            if (!res.ok) {
+                if (res.status === 404) return []; // No assessments yet
+                throw new Error('Failed to fetch assessments');
+            }
+
+            const assessment = await res.json();
+
+            // Adaptador: Convertimos el MeasurementRecord de Prisma al MeasurementRecord del Frontend
+            if (!assessment || !assessment.measurements) return [];
+
+            return assessment.measurements.map((m: any) => ({
+                id: m.id,
+                patientId: patientId,
+                measurementId: m.definitionId,
+                value: m.numericValue, // El frontend por ahora solo pinta valores numéricos 
+                date: assessment.date.split('T')[0]
+            }));
+
+        } catch (error) {
+            console.error("Error fetching patient records:", error);
+            return []; // Fallback a vacío si falla la red en lugar del mock 
+        }
     },
 
     addRecord: async (patientId: string, measurementId: string, value: number, date: string): Promise<MeasurementRecord> => {
-        return new Promise(resolve => setTimeout(() => {
-            const newRecord: MeasurementRecord = {
-                id: `r_${Date.now()}`,
-                patientId,
-                measurementId,
-                value,
-                date,
-            };
-            mockRecords.push(newRecord);
-            resolve(newRecord);
-        }, 400));
+        // Wrapper legacy over batch insert
+        const res = await measurementsService.batchAddRecords(patientId, [{ measurementId, value }], date);
+        return res[0];
     },
 
     deleteRecord: async (recordId: string): Promise<void> => {
-        return new Promise(resolve => setTimeout(() => {
-            mockRecords = mockRecords.filter(r => r.id !== recordId);
-            resolve();
-        }, 400));
+        // En la nueva arquitectura, no se borran records individuales sino que se inactiva el Assessment o se hace un PATCH.
+        // Dado que el UI actual espera esta función, la mockeamos vacía para no romper la transición.
+        console.warn('Individual record deletion is deprecated in the new assessment model.');
+        return Promise.resolve();
     },
 
     batchAddRecords: async (patientId: string, records: { measurementId: string, value: number }[], date: string): Promise<MeasurementRecord[]> => {
-        return new Promise(resolve => setTimeout(() => {
-            const newRecords: MeasurementRecord[] = records.map((rec, index) => ({
-                id: `r_batch_${Date.now()}_${index}`,
-                patientId,
-                measurementId: rec.measurementId,
-                value: rec.value,
-                date,
+        try {
+            const token = localStorage.getItem('token') || '';
+            const payload = {
+                date: new Date(date).toISOString(),
+                status: 'COMPLETED',
+                measurements: records.map(r => ({
+                    definitionId: r.measurementId,
+                    numericValue: r.value
+                }))
+            };
+
+            const res = await fetch(`http://localhost:3000/patients/${patientId}/assessments`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!res.ok) throw new Error('Failed to save assessment');
+
+            const assessment = await res.json();
+
+            return assessment.measurements.map((m: any) => ({
+                id: m.id,
+                patientId: patientId,
+                measurementId: m.definitionId,
+                value: m.numericValue,
+                date: assessment.date.split('T')[0]
             }));
 
-            mockRecords.push(...newRecords);
-            resolve(newRecords);
-        }, 600)); // slightly longer delay for batch
+        } catch (error) {
+            console.error("Error saving assessment batch:", error);
+            throw error;
+        }
     }
 };

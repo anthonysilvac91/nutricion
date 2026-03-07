@@ -26,15 +26,20 @@ export default function PatientProfilePage() {
     const initialTab = searchParams.get("tab") || TAB_KEYS.INFO
     const [activeTab, setActiveTab] = useState(initialTab)
     const [patient, setPatient] = useState<any>(null)
+    const [summary, setSummary] = useState<any>(null)
     const [loading, setLoading] = useState(true)
 
     // Edit Modal State
     const [isEditModalOpen, setIsEditModalOpen] = useState(false)
 
-    const loadPatient = async () => {
+    const loadPatientAndSummary = async () => {
         try {
-            const p = await api.getPatient(id)
+            const [p, s] = await Promise.all([
+                api.getPatient(id),
+                api.getPatientSummary(id)
+            ])
             setPatient(p)
+            setSummary(s)
         } catch (e) {
             console.error(e)
         } finally {
@@ -43,7 +48,7 @@ export default function PatientProfilePage() {
     }
 
     useEffect(() => {
-        if (id) loadPatient()
+        if (id) loadPatientAndSummary()
     }, [id])
 
     useEffect(() => {
@@ -60,19 +65,18 @@ export default function PatientProfilePage() {
     const birthYear = new Date(patient.birthDate).getFullYear()
     const age = currentYear - birthYear
 
-    const lastMeasurement = patient.measurements && patient.measurements.length > 0
-        ? patient.measurements[patient.measurements.length - 1]
-        : null
+    // Obtener valores recientes del resúmen
+    const latestWeight = summary?.latestVitals?.weight?.value || "--"
+    const latestBmi = summary?.latestVitals?.bmi?.value || "--"
 
-    const getImcStatus = (imc: number) => {
-        if (!imc) return { label: "-", color: "text-gray-400", bg: "bg-gray-100" }
-        if (imc < 18.5) return { label: "Bajo peso", color: "text-blue-600", bg: "bg-blue-100" }
-        if (imc < 25) return { label: "Peso normal", color: "text-green-600", bg: "bg-green-100" }
-        if (imc < 30) return { label: "Sobrepeso", color: "text-orange-600", bg: "bg-orange-100" }
-        return { label: "Obesidad", color: "text-red-600", bg: "bg-red-100" }
-    }
+    // Mapeo dinámico del color UI dictado por el backend a clases de Tailwind (temporal hasta estandarizar)
+    // El backend podría enviar "warning", "critical", "success" en el futuro a través de uiTone de resultados calculados. 
+    // Por simplicidad, inferimos el color de los flags de riesgo por ahora, ya que el BMI real viaja en `/assessments/latest`
 
-    const imcStatus = lastMeasurement ? getImcStatus(parseFloat(lastMeasurement.imc)) : getImcStatus(0)
+    const hasRisk = summary?.flags?.includes('OVERWEIGHT_RISK')
+    const bmiColor = hasRisk ? "text-orange-600" : (latestBmi === "--" ? "text-gray-400" : "text-green-600")
+    const bmiBg = hasRisk ? "bg-orange-100" : (latestBmi === "--" ? "bg-gray-100" : "bg-green-100")
+    const bmiLabel = hasRisk ? "Riesgo de peso" : (latestBmi === "--" ? "-" : "Peso normal")
 
     // Sub-components for modules
     const InfoTab = () => (
@@ -92,7 +96,7 @@ export default function PatientProfilePage() {
                             </div>
                         </div>
                         <div className="flex items-baseline gap-1">
-                            <span className="text-lg font-bold text-gray-800">{lastMeasurement ? lastMeasurement.weight : "--"}</span>
+                            <span className="text-lg font-bold text-gray-800">{latestWeight}</span>
                             <span className="text-xs text-gray-500">kg</span>
                         </div>
                     </Card>
@@ -106,7 +110,7 @@ export default function PatientProfilePage() {
                             </div>
                         </div>
                         <div className="flex items-baseline gap-1">
-                            <span className="text-lg font-bold text-gray-800">32.5</span>
+                            <span className="text-lg font-bold text-gray-800">--</span>
                             <span className="text-xs text-gray-500">%</span>
                         </div>
                     </Card>
@@ -120,7 +124,7 @@ export default function PatientProfilePage() {
                             </div>
                         </div>
                         <div className="flex items-baseline gap-1">
-                            <span className="text-lg font-bold text-gray-800">24.8</span>
+                            <span className="text-lg font-bold text-gray-800">--</span>
                             <span className="text-xs text-gray-500">%</span>
                         </div>
                     </Card>
@@ -129,14 +133,14 @@ export default function PatientProfilePage() {
                     <Card className="border-none shadow-sm p-3 bg-white flex flex-col justify-center gap-1 h-full">
                         <div className="flex items-center justify-between">
                             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">IMC</p>
-                            <div className={`h-6 w-6 rounded-full flex items-center justify-center ${imcStatus.bg} ${imcStatus.color}`}>
+                            <div className={`h-6 w-6 rounded-full flex items-center justify-center ${bmiBg} ${bmiColor}`}>
                                 <TrendingUp className="h-3 w-3" />
                             </div>
                         </div>
                         <div className="flex flex-col leading-none">
-                            <span className="text-lg font-bold text-gray-800">{lastMeasurement ? lastMeasurement.imc : "--"}</span>
-                            <span className={`text-[9px] font-bold uppercase truncate ${imcStatus.color}`}>
-                                {imcStatus.label}
+                            <span className="text-lg font-bold text-gray-800">{latestBmi}</span>
+                            <span className={`text-[9px] font-bold uppercase truncate ${bmiColor}`}>
+                                {bmiLabel}
                             </span>
                         </div>
                     </Card>
@@ -307,7 +311,7 @@ export default function PatientProfilePage() {
             <NewPatientModal
                 isOpen={isEditModalOpen}
                 onClose={() => setIsEditModalOpen(false)}
-                onSuccess={loadPatient}
+                onSuccess={loadPatientAndSummary}
                 patientToEdit={patient} // Pass current patient data
             />
         </div>
