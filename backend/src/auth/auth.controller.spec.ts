@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AuthController } from './auth.controller';
+import { AuthService } from './auth.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { JwtService } from '@nestjs/jwt';
 
 describe('AuthController', () => {
   let controller: AuthController;
@@ -7,6 +10,24 @@ describe('AuthController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AuthController],
+      providers: [
+        {
+          provide: AuthService,
+          useValue: {
+            login: jest.fn(),
+            register: jest.fn(),
+            me: jest.fn(),
+          },
+        },
+        {
+          provide: PrismaService,
+          useValue: {},
+        },
+        {
+          provide: JwtService,
+          useValue: {},
+        }
+      ],
     }).compile();
 
     controller = module.get<AuthController>(AuthController);
