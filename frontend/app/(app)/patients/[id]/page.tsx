@@ -8,6 +8,7 @@ import { Card } from "@/components/ui/Card"
 import { NewPatientModal } from "@/components/patients/NewPatientModal"
 import { MeasurementsTab } from "@/components/patients/measurements/MeasurementsTab"
 import { PlanningTab } from "@/components/patients/planning/PlanningTab"
+import { MealPlanTab } from "@/components/patients/meal-plan/MealPlanTab"
 import { useMockMode } from "@/lib/mock-mode-context"
 
 const MOCK_PATIENT = {
@@ -334,7 +335,8 @@ export default function PatientProfilePage() {
                 {activeTab === TAB_KEYS.INFO && <InfoTab />}
                 {activeTab === TAB_KEYS.MEASUREMENTS && <MeasurementsTab patientId={id} />}
                 {activeTab === TAB_KEYS.PLANNING && <PlanningTab patientId={id} />}
-                {(activeTab === TAB_KEYS.ANAMNESIS || activeTab === TAB_KEYS.MEAL_PLAN) && <PlaceholderTab label="🚀 Próximamente" />}
+                {activeTab === TAB_KEYS.ANAMNESIS && <PlaceholderTab label="🚀 Próximamente" />}
+                {activeTab === TAB_KEYS.MEAL_PLAN && <MealPlanTab patientId={id} />}
                 {activeTab === TAB_KEYS.REPORTS && <PlaceholderTab label="🛠️ En desarrollo" />}
             </div>
 
