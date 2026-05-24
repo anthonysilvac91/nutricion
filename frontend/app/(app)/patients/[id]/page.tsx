@@ -1,7 +1,8 @@
 "use client"
 import { useEffect, useState } from "react"
 import { useParams, useRouter, useSearchParams } from "next/navigation"
-import { Edit2, Pencil, TrendingUp, Calendar, Activity, Target, Clock, AlertCircle, Dumbbell, Layers } from "lucide-react"
+import Link from "next/link"
+import { ChevronLeft, Edit2, Pencil, TrendingUp, Calendar, Activity, Target, Clock, AlertCircle, Dumbbell, Layers } from "lucide-react"
 import { api } from "@/lib/api"
 import { Button } from "@/components/ui/Button"
 import { Card } from "@/components/ui/Card"
@@ -288,8 +289,15 @@ export default function PatientProfilePage() {
 
     return (
         <div className="h-[calc(100vh-140px)] flex flex-col space-y-3">
+            {/* Back */}
+            <div className="flex-none">
+                <Link href="/patients" className="inline-flex items-center gap-1 text-xs font-semibold text-gray-400 hover:text-[#1DBF73] transition-colors">
+                    <ChevronLeft className="h-3.5 w-3.5" /> Pacientes
+                </Link>
+            </div>
+
             {/* Header */}
-            <div className="flex-none flex items-center gap-4 pt-1">
+            <div className="flex-none flex items-center gap-4">
                 <div className="h-16 w-16 rounded-full bg-[#E6FFFA] text-[#1DBF73] flex items-center justify-center text-2xl font-bold border-4 border-white shadow-sm">
                     {ep.name.charAt(0)}
                 </div>

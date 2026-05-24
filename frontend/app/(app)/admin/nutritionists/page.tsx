@@ -11,9 +11,20 @@ import { NutritionistEditDrawer } from "@/components/admin/nutritionists/Nutriti
 
 import { Nutritionist, nutritionistsService } from "@/services/nutritionistsService"
 import { getUserFromToken } from "@/lib/auth"
+import { useMockMode } from "@/lib/mock-mode-context"
+
+const MOCK_NUTRITIONISTS: Nutritionist[] = [
+    { id: "n1", email: "carolina.reyes@nutriapp.cl",  subscriptionStatus: "ACTIVE",   trialEndsAt: null,           patientsCount: 24, createdAt: "2024-03-10T10:00:00Z" },
+    { id: "n2", email: "andres.mora@nutriapp.cl",     subscriptionStatus: "ACTIVE",   trialEndsAt: null,           patientsCount: 18, createdAt: "2024-05-22T09:30:00Z" },
+    { id: "n3", email: "valentina.soto@nutriapp.cl",  subscriptionStatus: "TRIALING", trialEndsAt: "2026-06-15T00:00:00Z", patientsCount: 5,  createdAt: "2026-05-01T08:00:00Z" },
+    { id: "n4", email: "jorge.fuentes@nutriapp.cl",   subscriptionStatus: "EXPIRED",  trialEndsAt: null,           patientsCount: 31, createdAt: "2023-11-18T14:20:00Z" },
+    { id: "n5", email: "isadora.vega@nutriapp.cl",    subscriptionStatus: "ACTIVE",   trialEndsAt: null,           patientsCount: 12, createdAt: "2024-08-07T11:45:00Z" },
+    { id: "n6", email: "roberto.salas@nutriapp.cl",   subscriptionStatus: "BLOCKED",  trialEndsAt: null,           patientsCount: 0,  createdAt: "2023-06-30T16:00:00Z" },
+]
 
 export default function AdminNutritionistsPage() {
     const router = useRouter()
+    const { isMock } = useMockMode()
     const [role, setRole] = useState<string | null>(null)
     const [isRoleChecked, setIsRoleChecked] = useState(false)
 
@@ -57,13 +68,20 @@ export default function AdminNutritionistsPage() {
 
     // Effect for fetching logic - triggers when filters or page changes
     useEffect(() => {
-        if (role === "ADMIN") {
-            const timeoutId = setTimeout(() => {
-                fetchNutritionists()
-            }, 300) // debounce
-            return () => clearTimeout(timeoutId)
+        if (role !== "ADMIN") return
+
+        if (isMock) {
+            setNutritionists(MOCK_NUTRITIONISTS)
+            setTotal(MOCK_NUTRITIONISTS.length)
+            setIsLoading(false)
+            return
         }
-    }, [search, status, page, role])
+
+        const timeoutId = setTimeout(() => {
+            fetchNutritionists()
+        }, 300)
+        return () => clearTimeout(timeoutId)
+    }, [search, status, page, role, isMock])
 
     // EARLY RETURN: Not authorized
     if (role !== "ADMIN") {

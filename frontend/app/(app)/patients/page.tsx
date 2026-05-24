@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Users, UserCheck, UserPlus, CalendarOff, Edit, Trash, Eye, ShieldAlert, Search, ChevronDown } from "lucide-react"
+import { Users, UserCheck, UserPlus, CalendarOff, Trash, Eye, ShieldAlert, Search, ChevronDown } from "lucide-react"
 import { api } from "@/lib/api"
 import { Card } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
@@ -324,11 +324,6 @@ export default function PatientsPage() {
                                                 <Link href={`/patients/${patient.id}`}>
                                                     <button className="flex items-center gap-1.5 text-xs font-semibold text-[#1DBF73] bg-green-50 border border-green-200 px-3 py-1.5 rounded-lg hover:bg-green-100 transition-colors whitespace-nowrap">
                                                         <Eye className="h-3.5 w-3.5" /> Ver ficha
-                                                    </button>
-                                                </Link>
-                                                <Link href={`/patients/${patient.id}/edit`}>
-                                                    <button className="p-1.5 text-gray-300 hover:text-blue-500 transition-colors" title="Editar">
-                                                        <Edit className="h-4 w-4" />
                                                     </button>
                                                 </Link>
                                                 <button

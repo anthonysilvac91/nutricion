@@ -29,7 +29,7 @@ export default function AppLayout({
                 <Sidebar />
                 <div className="flex flex-col md:pl-55 min-h-screen transition-all">
                     <Topbar />
-                    <main className="flex-1 p-6 max-w-7xl w-full mx-auto animate-in fade-in duration-500">
+                    <main className="flex-1 p-6 w-full animate-in fade-in duration-500">
                         {children}
                     </main>
                 </div>

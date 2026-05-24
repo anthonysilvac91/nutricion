@@ -40,7 +40,7 @@ const Topbar = () => {
 
     return (
         <header className="sticky top-0 z-40 h-18 bg-[#F3F6F8]/90 backdrop-blur-sm">
-            <div className="w-full max-w-7xl mx-auto px-8 flex items-center justify-between h-full">
+            <div className="w-full px-8 flex items-center justify-between h-full">
 
                 {/* Left: greeting on dashboard only */}
                 {isDashboard ? (
