@@ -7,11 +7,41 @@ import { Button } from "@/components/ui/Button"
 import { Card } from "@/components/ui/Card"
 import { NewPatientModal } from "@/components/patients/NewPatientModal"
 import { MeasurementsTab } from "@/components/patients/measurements/MeasurementsTab"
+import { useMockMode } from "@/lib/mock-mode-context"
+
+const MOCK_PATIENT = {
+    id: "mock-id",
+    name: "María García López",
+    firstName: "María",
+    lastName: "García López",
+    email: "maria.garcia@email.com",
+    birthDate: "1990-03-15",
+    gender: "female",
+    sex: "FEMALE",
+    activityLevel: "MODERATE",
+    observations: "Paciente con historial de resistencia a la insulina. Busca reducir 8 kg en 6 meses con dieta mediterránea adaptada. Actividad física moderada: 3 veces por semana en gimnasio más caminatas diarias de 30 minutos.",
+    measurements: [
+        { id: "m1", date: "2025-05-10T00:00:00Z", weight: 72.5, imc: 26.4, height: 165 },
+        { id: "m2", date: "2025-04-15T00:00:00Z", weight: 73.8, imc: 27.1, height: 165 },
+        { id: "m3", date: "2025-03-20T00:00:00Z", weight: 75.2, imc: 27.6, height: 165 },
+    ],
+}
+
+const MOCK_SUMMARY = {
+    latestVitals: {
+        weight: { value: 72.5 },
+        bmi: { value: 26.4 },
+        muscleMass: { value: 35.2 },
+        bodyFat: { value: 28.1 },
+    },
+    flags: ["OVERWEIGHT_RISK"],
+}
 
 export default function PatientProfilePage() {
     const params = useParams()
     const id = params.id as string
     const searchParams = useSearchParams()
+    const { isMock } = useMockMode()
 
     // Tabs configuration
     const TAB_KEYS = {
@@ -60,20 +90,21 @@ export default function PatientProfilePage() {
     if (loading) return <div className="p-8 text-center text-muted-foreground">Cargando perfil...</div>
     if (!patient) return <div className="p-8 text-center text-muted-foreground">Paciente no encontrado</div>
 
+    const ep = isMock ? MOCK_PATIENT : patient
+    const es = isMock ? MOCK_SUMMARY : summary
+
     // Calculations
     const currentYear = new Date().getFullYear()
-    const birthYear = new Date(patient.birthDate).getFullYear()
+    const birthYear = new Date(ep.birthDate).getFullYear()
     const age = currentYear - birthYear
 
     // Obtener valores recientes del resúmen
-    const latestWeight = summary?.latestVitals?.weight?.value || "--"
-    const latestBmi = summary?.latestVitals?.bmi?.value || "--"
+    const latestWeight = es?.latestVitals?.weight?.value ?? "--"
+    const latestBmi = es?.latestVitals?.bmi?.value ?? "--"
+    const latestMuscleMass = es?.latestVitals?.muscleMass?.value ?? "--"
+    const latestBodyFat = es?.latestVitals?.bodyFat?.value ?? "--"
 
-    // Mapeo dinámico del color UI dictado por el backend a clases de Tailwind (temporal hasta estandarizar)
-    // El backend podría enviar "warning", "critical", "success" en el futuro a través de uiTone de resultados calculados. 
-    // Por simplicidad, inferimos el color de los flags de riesgo por ahora, ya que el BMI real viaja en `/assessments/latest`
-
-    const hasRisk = summary?.flags?.includes('OVERWEIGHT_RISK')
+    const hasRisk = es?.flags?.includes("OVERWEIGHT_RISK")
     const bmiColor = hasRisk ? "text-orange-600" : (latestBmi === "--" ? "text-gray-400" : "text-green-600")
     const bmiBg = hasRisk ? "bg-orange-100" : (latestBmi === "--" ? "bg-gray-100" : "bg-green-100")
     const bmiLabel = hasRisk ? "Riesgo de peso" : (latestBmi === "--" ? "-" : "Peso normal")
@@ -110,7 +141,7 @@ export default function PatientProfilePage() {
                             </div>
                         </div>
                         <div className="flex items-baseline gap-1">
-                            <span className="text-lg font-bold text-gray-800">--</span>
+                            <span className="text-lg font-bold text-gray-800">{latestMuscleMass}</span>
                             <span className="text-xs text-gray-500">%</span>
                         </div>
                     </Card>
@@ -124,7 +155,7 @@ export default function PatientProfilePage() {
                             </div>
                         </div>
                         <div className="flex items-baseline gap-1">
-                            <span className="text-lg font-bold text-gray-800">--</span>
+                            <span className="text-lg font-bold text-gray-800">{latestBodyFat}</span>
                             <span className="text-xs text-gray-500">%</span>
                         </div>
                     </Card>
@@ -174,7 +205,7 @@ export default function PatientProfilePage() {
                                 <span className="w-1 h-1 rounded-full bg-[#1DBF73]"></span> Motivo de consulta
                             </h4>
                             <p className="text-gray-600 text-xs leading-relaxed pl-3 border-l-2 border-gray-100">
-                                {patient.observations ? "Referido por interés personal en mejorar hábitos alimenticios." : "Sin registrar."}
+                                {ep.observations ? "Referido por interés personal en mejorar hábitos alimenticios." : "Sin registrar."}
                             </p>
                         </div>
 
@@ -183,7 +214,7 @@ export default function PatientProfilePage() {
                                 <span className="w-1 h-1 rounded-full bg-[#1DBF73]"></span> Objetivos Clínicos
                             </h4>
                             <div className="flex flex-wrap gap-1.5 pl-3">
-                                {patient.measurements.length > 0 ? (
+                                {ep.measurements.length > 0 ? (
                                     <>
                                         <span className="bg-green-50 text-green-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide">Control peso</span>
                                         <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide">Composición corporal</span>
@@ -199,7 +230,7 @@ export default function PatientProfilePage() {
                                 <span className="w-1 h-1 rounded-full bg-[#1DBF73]"></span> Observaciones
                             </h4>
                             <p className="text-gray-600 text-xs leading-relaxed pl-3 bg-gray-50 p-2 rounded">
-                                {patient.observations || "No hay observaciones registradas en la ficha."}
+                                {ep.observations || "No hay observaciones registradas en la ficha."}
                             </p>
                         </div>
                     </div>
@@ -214,9 +245,9 @@ export default function PatientProfilePage() {
                         </div>
                     </div>
                     <div className="flex-1 p-4 bg-gray-50/50 overflow-y-auto">
-                        {patient.measurements && patient.measurements.length > 0 ? (
+                        {ep.measurements && ep.measurements.length > 0 ? (
                             <div className="relative border-l-2 border-gray-200 ml-2 space-y-4 py-1">
-                                {[...patient.measurements].reverse().slice(0, 3).map((m: any, idx) => (
+                                {[...ep.measurements].reverse().slice(0, 3).map((m: any, idx) => (
                                     <div key={m.id} className="relative pl-4">
                                         <div className={`absolute -left-[7px] top-1.5 h-3 w-3 rounded-full border-2 border-white shadow-sm ${idx === 0 ? 'bg-[#1DBF73]' : 'bg-gray-300'}`}></div>
                                         <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100">
@@ -259,11 +290,11 @@ export default function PatientProfilePage() {
             {/* Header */}
             <div className="flex-none flex items-center gap-4 pt-1">
                 <div className="h-16 w-16 rounded-full bg-[#E6FFFA] text-[#1DBF73] flex items-center justify-center text-2xl font-bold border-4 border-white shadow-sm">
-                    {patient.name.charAt(0)}
+                    {ep.name.charAt(0)}
                 </div>
                 <div>
                     <div className="flex items-center gap-3">
-                        <h1 className="text-xl font-bold text-[#3E4C59]">{patient.name}</h1>
+                        <h1 className="text-xl font-bold text-[#3E4C59]">{ep.name}</h1>
                         <button onClick={() => setIsEditModalOpen(true)} className="p-1 bg-white shadow-sm border border-gray-100 hover:border-[#1DBF73] rounded-full text-gray-400 hover:text-[#1DBF73] transition-all cursor-pointer">
                             <Pencil className="h-3 w-3" />
                         </button>

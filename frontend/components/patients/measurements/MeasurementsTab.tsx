@@ -6,10 +6,13 @@ import {
     MeasurementDefinition,
     MeasurementRecord,
     measurementsService,
-    GROUP_LABELS
+    GROUP_LABELS,
+    mockDefinitions,
+    generateAllMockRecords,
 } from "@/services/measurementsService";
+import { useMockMode } from "@/lib/mock-mode-context";
 import { MeasureSummaryCard } from "@/components/patients/measurements/MeasureSummaryCard";
-import { MeasureDetailPanel } from "@/components/patients/measurements/MeasureDetailPanel";
+import { MeasurementDrawer } from "@/components/patients/measurements/MeasurementDrawer";
 import { MeasurementSettingsModal } from "@/components/patients/measurements/MeasurementSettingsModal";
 import { MeasurementQuickAddModal } from "@/components/patients/measurements/MeasurementQuickAddModal";
 import { Loader2, Settings2, Zap } from "lucide-react";
@@ -20,6 +23,7 @@ interface Props {
 }
 
 export function MeasurementsTab({ patientId }: Props) {
+    const { isMock } = useMockMode();
     const [definitions, setDefinitions] = useState<MeasurementDefinition[]>([]);
     const [records, setRecords] = useState<MeasurementRecord[]>([]);
     const [loading, setLoading] = useState(true);
@@ -27,7 +31,6 @@ export function MeasurementsTab({ patientId }: Props) {
     // UI State
     const [activeGroup, setActiveGroup] = useState<MeasurementGroup>('BASIC');
     const [activeMeasurementId, setActiveMeasurementId] = useState<string | null>(null);
-    const [isExpanded, setIsExpanded] = useState(false); // New explicit expand mode
 
     // Modals state
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -58,7 +61,6 @@ export function MeasurementsTab({ patientId }: Props) {
             setDefinitions(defs);
             setRecords(recs);
 
-            // Si es la primera vez que entramos y visibleMeasurementIds está vacío, mostrar las básicas por defecto
             if (visibleMeasurementIds.length === 0) {
                 const stored = localStorage.getItem("visibleMeasurements");
                 if (!stored) {
@@ -66,7 +68,6 @@ export function MeasurementsTab({ patientId }: Props) {
                     setVisibleMeasurementIds(defaultVisibles);
                 }
             }
-
         } catch (error) {
             console.error("Failed to load measurements data", error);
         } finally {
@@ -75,23 +76,32 @@ export function MeasurementsTab({ patientId }: Props) {
     };
 
     useEffect(() => {
+        if (isMock) {
+            setDefinitions(mockDefinitions);
+            setRecords(generateAllMockRecords("mock-patient"));
+            setVisibleMeasurementIds(mockDefinitions.map(d => d.id));
+            setLoading(false);
+            return;
+        }
         loadData();
-    }, [patientId]);
+    }, [patientId, isMock]);
 
     const handleAddRecord = async (value: number, date: string) => {
-        if (!activeMeasurementId) return;
+        if (isMock || !activeMeasurementId) return;
         await measurementsService.addRecord(patientId, activeMeasurementId, value, date);
         const updatedRecs = await measurementsService.getPatientRecords(patientId);
         setRecords(updatedRecs);
     };
 
     const handleDeleteRecord = async (recordId: string) => {
+        if (isMock) return;
         await measurementsService.deleteRecord(recordId);
         const updatedRecs = await measurementsService.getPatientRecords(patientId);
         setRecords(updatedRecs);
     };
 
     const handleBatchAddRecords = async (newRecords: { measurementId: string, value: number }[], date: string) => {
+        if (isMock) return;
         await measurementsService.batchAddRecords(patientId, newRecords, date);
         const updatedRecs = await measurementsService.getPatientRecords(patientId);
         setRecords(updatedRecs);
@@ -99,13 +109,13 @@ export function MeasurementsTab({ patientId }: Props) {
 
     const handleSaveSettings = (newVisibleIds: string[]) => {
         setVisibleMeasurementIds(newVisibleIds);
-        localStorage.setItem("visibleMeasurements", JSON.stringify(newVisibleIds));
+        if (!isMock) localStorage.setItem("visibleMeasurements", JSON.stringify(newVisibleIds));
         setIsSettingsOpen(false);
     };
 
     if (loading) {
         return (
-            <div className="flex items-center justify-center min-h-[400px]">
+            <div className="flex items-center justify-center min-h-100">
                 <Loader2 className="w-8 h-8 animate-spin text-[#1DBF73]" />
             </div>
         );
@@ -131,7 +141,6 @@ export function MeasurementsTab({ patientId }: Props) {
                                 onClick={() => {
                                     setActiveGroup(group);
                                     setActiveMeasurementId(null);
-                                    setIsExpanded(false); // Reset expanded state on group change
                                 }}
                                 className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${activeGroup === group
                                     ? "bg-[#1DBF73] text-white shadow-md shadow-green-100"
@@ -163,98 +172,41 @@ export function MeasurementsTab({ patientId }: Props) {
                 </div>
             </div>
 
-            {/* Layout Wrapper: Grid vs Panel */}
-            <div className="flex-1 flex gap-4 min-h-0 relative">
+            {/* Cards grid */}
+            <div className="flex-1 min-h-0 overflow-y-auto pb-4 pr-1">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+                    {activeDefs.filter(d => visibleMeasurementIds.includes(d.id)).map(def => {
+                        const defRecords = records.filter(r => r.measurementId === def.id);
+                        return (
+                            <MeasureSummaryCard
+                                key={def.id}
+                                definition={def}
+                                latestRecord={defRecords[0]}
+                                previousRecord={defRecords[1]}
+                                isActive={activeMeasurementId === def.id}
+                                onClick={() => setActiveMeasurementId(def.id)}
+                            />
+                        );
+                    })}
 
-                {/* Main Content (Left Grid) */}
-                <div className="flex-1 flex flex-col min-w-0 transition-all duration-300">
-                    <div className="flex-1 overflow-y-auto pr-2 pb-4">
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
-                            {activeDefs.filter(d => visibleMeasurementIds.includes(d.id)).map(def => {
-                                const defRecords = records.filter(r => r.measurementId === def.id);
-                                const latestRecord = defRecords[0]; // records are sorted desc
-                                const previousRecord = defRecords[1];
-
-                                return (
-                                    <MeasureSummaryCard
-                                        key={def.id}
-                                        definition={def}
-                                        latestRecord={latestRecord}
-                                        previousRecord={previousRecord}
-                                        isActive={activeMeasurementId === def.id}
-                                        onClick={() => {
-                                            setActiveMeasurementId(def.id);
-                                            // Optional: unfold panel immediately if not open
-                                        }}
-                                    />
-                                );
-                            })}
-
-                            {activeDefs.filter(d => visibleMeasurementIds.includes(d.id)).length === 0 && (
-                                <div className="col-span-full py-12 text-center text-gray-400">
-                                    No hay mediciones visibles en esta categoría. Puedes activarlas en "Configurar".
-                                </div>
-                            )}
+                    {activeDefs.filter(d => visibleMeasurementIds.includes(d.id)).length === 0 && (
+                        <div className="col-span-full py-12 text-center text-gray-400">
+                            No hay mediciones visibles en esta categoría. Puedes activarlas en "Configurar".
                         </div>
-                    </div>
+                    )}
                 </div>
-
-                {/* Detail Panel (Right) NORMAL MODE - xl only */}
-                {!isExpanded && activeMeasurementId && activeDef && (
-                    <div className="transition-all duration-300 static right-0 top-0 bottom-0 z-20 xl:block hidden w-[400px] shrink-0 animate-in slide-in-from-right-8">
-                        <MeasureDetailPanel
-                            definition={activeDef}
-                            records={activeDefRecords}
-                            onClose={() => {
-                                setActiveMeasurementId(null);
-                            }}
-                            onAddRecord={handleAddRecord}
-                            onDeleteRecord={handleDeleteRecord}
-                            isExpanded={false}
-                            onToggleExpand={() => setIsExpanded(true)}
-                        />
-                    </div>
-                )}
             </div>
 
-            {/* EXPANDED MODE OVERLAY (Desktop only) rendered via Portal to escape stacking context */}
-            {isExpanded && activeMeasurementId && activeDef && typeof document !== "undefined" && createPortal(
-                <div className="hidden xl:flex fixed inset-0 z-[9999] bg-black/20 backdrop-blur-sm justify-center items-center py-10 px-6 animate-in fade-in duration-200">
-                    <div className="w-full max-w-5xl h-[85vh] max-h-[85vh] shadow-2xl rounded-2xl overflow-hidden animate-in zoom-in-95 duration-300">
-                        <MeasureDetailPanel
-                            definition={activeDef}
-                            records={activeDefRecords}
-                            onClose={() => {
-                                setActiveMeasurementId(null);
-                                setIsExpanded(false);
-                            }}
-                            onAddRecord={handleAddRecord}
-                            onDeleteRecord={handleDeleteRecord}
-                            isExpanded={true}
-                            onToggleExpand={() => setIsExpanded(false)}
-                        />
-                    </div>
-                </div>,
+            {/* Measurement Drawer */}
+            {activeMeasurementId && activeDef && typeof document !== "undefined" && createPortal(
+                <MeasurementDrawer
+                    definition={activeDef}
+                    records={activeDefRecords}
+                    onClose={() => setActiveMeasurementId(null)}
+                    onAddRecord={handleAddRecord}
+                    onDeleteRecord={handleDeleteRecord}
+                />,
                 document.body
-            )}
-            {/* Mobile/Tablet Detail Overlay (Shows if screen is < xl) */}
-            {activeMeasurementId && activeDef && (
-                <div className="xl:hidden fixed inset-0 z-[100] bg-black/20 backdrop-blur-sm flex justify-end animate-in fade-in duration-200">
-                    <div className="w-full max-w-md h-full bg-white shadow-2xl animate-in slide-in-from-right-8 duration-300">
-                        <MeasureDetailPanel
-                            definition={activeDef}
-                            records={activeDefRecords}
-                            onClose={() => {
-                                setActiveMeasurementId(null);
-                                setIsExpanded(false);
-                            }}
-                            onAddRecord={handleAddRecord}
-                            onDeleteRecord={handleDeleteRecord}
-                            isExpanded={false}
-                            onToggleExpand={() => { }} // Disabled on mobile
-                        />
-                    </div>
-                </div>
             )}
 
             {/* Global Modals rendered via Portal */}
