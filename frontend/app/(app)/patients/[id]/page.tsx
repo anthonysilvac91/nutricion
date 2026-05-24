@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button"
 import { Card } from "@/components/ui/Card"
 import { NewPatientModal } from "@/components/patients/NewPatientModal"
 import { MeasurementsTab } from "@/components/patients/measurements/MeasurementsTab"
+import { PlanningTab } from "@/components/patients/planning/PlanningTab"
 import { useMockMode } from "@/lib/mock-mode-context"
 
 const MOCK_PATIENT = {
@@ -332,10 +333,9 @@ export default function PatientProfilePage() {
             <div className="flex-1 min-h-0 overflow-y-auto animate-in fade-in duration-300 pb-2 pr-1">
                 {activeTab === TAB_KEYS.INFO && <InfoTab />}
                 {activeTab === TAB_KEYS.MEASUREMENTS && <MeasurementsTab patientId={id} />}
+                {activeTab === TAB_KEYS.PLANNING && <PlanningTab />}
                 {(activeTab === TAB_KEYS.ANAMNESIS || activeTab === TAB_KEYS.MEAL_PLAN) && <PlaceholderTab label="🚀 Próximamente" />}
-                {(activeTab === TAB_KEYS.PLANNING || activeTab === TAB_KEYS.REPORTS) && (
-                    <PlaceholderTab label="🛠️ En desarrollo" />
-                )}
+                {activeTab === TAB_KEYS.REPORTS && <PlaceholderTab label="🛠️ En desarrollo" />}
             </div>
 
             {/* Edit Modal */}
