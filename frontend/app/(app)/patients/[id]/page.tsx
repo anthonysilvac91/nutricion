@@ -288,7 +288,7 @@ export default function PatientProfilePage() {
     )
 
     return (
-        <div className="h-[calc(100vh-120px)] flex flex-col space-y-3">
+        <div className="flex flex-col space-y-3">
             {/* Header */}
             <div className="flex-none flex items-center gap-4">
                 <div className="h-16 w-16 rounded-full bg-[#E6FFFA] text-[#1DBF73] flex items-center justify-center text-2xl font-bold border-4 border-white shadow-sm">
@@ -331,7 +331,7 @@ export default function PatientProfilePage() {
             </div>
 
             {/* Tab Content */}
-            <div className="flex-1 min-h-0 overflow-y-auto animate-in fade-in duration-300 pb-2 pr-1">
+            <div className="animate-in fade-in duration-300 pb-8">
                 {activeTab === TAB_KEYS.INFO && <InfoTab />}
                 {activeTab === TAB_KEYS.MEASUREMENTS && <MeasurementsTab patientId={id} />}
                 {activeTab === TAB_KEYS.PLANNING && <PlanningTab patientId={id} />}

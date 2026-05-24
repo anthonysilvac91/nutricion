@@ -6,6 +6,7 @@ import { X, Plus, Trash2, GripVertical, Edit2, Check } from "lucide-react";
 export interface Meal {
     id: string;
     label: string;
+    time?: string;
 }
 
 interface Props {
