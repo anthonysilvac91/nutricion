@@ -1,7 +1,8 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
 import { useRouter, usePathname } from "next/navigation"
-import { ChevronDown, LogOut, FlaskConical, Database } from "lucide-react"
+import Link from "next/link"
+import { ChevronDown, ChevronLeft, LogOut, FlaskConical, Database } from "lucide-react"
 import { getUserFromToken, DecodedToken } from "@/lib/auth"
 import { useMockMode } from "@/lib/mock-mode-context"
 
@@ -13,7 +14,8 @@ const Topbar = () => {
     const [user, setUser]             = useState<DecodedToken | null>(null)
     const { isMock, toggle }          = useMockMode()
 
-    const isDashboard = pathname === "/dashboard"
+    const isDashboard    = pathname === "/dashboard"
+    const isPatientDetail = /^\/patients\/[^/]+$/.test(pathname)
     const roleName    = user?.role
         ? user.role.charAt(0) + user.role.slice(1).toLowerCase()
         : "Nutricionista"
@@ -42,7 +44,7 @@ const Topbar = () => {
         <header className="sticky top-0 z-40 h-18 bg-[#F3F6F8]/90 backdrop-blur-sm">
             <div className="w-full px-8 flex items-center justify-between h-full">
 
-                {/* Left: greeting on dashboard only */}
+                {/* Left: greeting on dashboard, back link on patient detail */}
                 {isDashboard ? (
                     <div>
                         <h1 className="text-xl font-bold text-[#2A3547] leading-tight">
@@ -50,6 +52,10 @@ const Topbar = () => {
                         </h1>
                         <p className="text-xs text-gray-400 mt-0.5">Este es el resumen de tu consulta de hoy.</p>
                     </div>
+                ) : isPatientDetail ? (
+                    <Link href="/patients" className="inline-flex items-center gap-1 text-xs font-semibold text-gray-400 hover:text-[#1DBF73] transition-colors">
+                        <ChevronLeft className="h-3.5 w-3.5" /> Pacientes
+                    </Link>
                 ) : (
                     <span />
                 )}

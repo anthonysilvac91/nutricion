@@ -1,8 +1,7 @@
 "use client"
 import { useEffect, useState } from "react"
 import { useParams, useRouter, useSearchParams } from "next/navigation"
-import Link from "next/link"
-import { ChevronLeft, Edit2, Pencil, TrendingUp, Calendar, Activity, Target, Clock, AlertCircle, Dumbbell, Layers } from "lucide-react"
+import { Edit2, Pencil, TrendingUp, Calendar, Activity, Target, Clock, AlertCircle, Dumbbell, Layers } from "lucide-react"
 import { api } from "@/lib/api"
 import { Button } from "@/components/ui/Button"
 import { Card } from "@/components/ui/Card"
@@ -288,14 +287,7 @@ export default function PatientProfilePage() {
     )
 
     return (
-        <div className="h-[calc(100vh-140px)] flex flex-col space-y-3">
-            {/* Back */}
-            <div className="flex-none">
-                <Link href="/patients" className="inline-flex items-center gap-1 text-xs font-semibold text-gray-400 hover:text-[#1DBF73] transition-colors">
-                    <ChevronLeft className="h-3.5 w-3.5" /> Pacientes
-                </Link>
-            </div>
-
+        <div className="h-[calc(100vh-120px)] flex flex-col space-y-3">
             {/* Header */}
             <div className="flex-none flex items-center gap-4">
                 <div className="h-16 w-16 rounded-full bg-[#E6FFFA] text-[#1DBF73] flex items-center justify-center text-2xl font-bold border-4 border-white shadow-sm">
@@ -341,7 +333,7 @@ export default function PatientProfilePage() {
             <div className="flex-1 min-h-0 overflow-y-auto animate-in fade-in duration-300 pb-2 pr-1">
                 {activeTab === TAB_KEYS.INFO && <InfoTab />}
                 {activeTab === TAB_KEYS.MEASUREMENTS && <MeasurementsTab patientId={id} />}
-                {activeTab === TAB_KEYS.PLANNING && <PlanningTab />}
+                {activeTab === TAB_KEYS.PLANNING && <PlanningTab patientId={id} />}
                 {(activeTab === TAB_KEYS.ANAMNESIS || activeTab === TAB_KEYS.MEAL_PLAN) && <PlaceholderTab label="🚀 Próximamente" />}
                 {activeTab === TAB_KEYS.REPORTS && <PlaceholderTab label="🛠️ En desarrollo" />}
             </div>

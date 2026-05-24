@@ -62,9 +62,10 @@ model Patient {
   birthDate     DateTime
   activityLevel ActivityLevel
 
-  measurements Measurement[]
-  results      Result[]
-  assessments  Assessment[]
+  measurements      Measurement[]
+  results           Result[]
+  assessments       Assessment[]
+  nutritionalPlans  NutritionalPlan[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -97,6 +98,37 @@ model Result {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// ----------------------------------------------------------------------
+// PLANIFICACIÓN NUTRICIONAL
+// ----------------------------------------------------------------------
+
+enum PlanStatus {
+  DRAFT
+  FINALIZED
+}
+
+model NutritionalPlan {
+  id        String    @id @default(uuid())
+  patientId String
+  patient   Patient   @relation(fields: [patientId], references: [id])
+  userId    String
+
+  status      PlanStatus @default(DRAFT)
+  date        DateTime   @default(now())
+  finalizedAt DateTime?
+
+  patientValues Json?
+  energyCalc    Json?
+  macros        Json?
+  micros        Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId])
+  @@index([userId])
 }
 
 // ----------------------------------------------------------------------

@@ -136,6 +136,61 @@ export const api = {
         return handleResponse(res);
     },
 
+    // PLANS
+    getPlans: async (patientId: string) => {
+        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans`, {
+            method: "GET",
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
+
+    createOrGetDraft: async (patientId: string) => {
+        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans`, {
+            method: "POST",
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
+
+    getPlan: async (patientId: string, planId: string) => {
+        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans/${planId}`, {
+            method: "GET",
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
+
+    savePlan: async (patientId: string, planId: string, data: {
+        patientValues?: Record<string, any>;
+        energyCalc?: Record<string, any>;
+        macros?: Record<string, any>;
+        micros?: Record<string, any>;
+    }) => {
+        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans/${planId}`, {
+            method: "PATCH",
+            headers: getHeaders(),
+            body: JSON.stringify(data),
+        });
+        return handleResponse(res);
+    },
+
+    finalizePlan: async (patientId: string, planId: string) => {
+        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans/${planId}/finalize`, {
+            method: "POST",
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
+
+    reopenPlan: async (patientId: string, planId: string) => {
+        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans/${planId}/reopen`, {
+            method: "POST",
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
+
     // MEASUREMENTS (Placeholder - pending backend endpoint confirmation)
     createMeasurement: async (patientId: string, data: any) => {
         // Currently no direct endpoint in PatientsController for adding measurement?
