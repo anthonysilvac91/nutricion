@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Save, CheckCircle, RotateCcw, ChevronDown, FileText } from "lucide-react";
+import { Plus, Save, CheckCircle, RotateCcw, FileText, ChevronDown } from "lucide-react";
 import { api } from "@/lib/api";
 import { PatientValuesSection, PatientValuesData } from "./PatientValuesSection";
 import { EnergySection, EnergyData } from "./EnergySection";
@@ -45,6 +45,7 @@ export function PlanningTab({ patientId }: Props) {
     const [loading,       setLoading]       = useState(true);
     const [saving,        setSaving]        = useState(false);
     const [selectorOpen,  setSelectorOpen]  = useState(false);
+    const selectorRef = useRef<HTMLDivElement>(null);
 
     const pendingData = useRef<PlanData>({});
 
@@ -69,6 +70,16 @@ export function PlanningTab({ patientId }: Props) {
     }, [patientId]);
 
     useEffect(() => { loadPlans(); }, [loadPlans]);
+
+    useEffect(() => {
+        const handleClickOutside = (e: MouseEvent) => {
+            if (selectorRef.current && !selectorRef.current.contains(e.target as Node)) {
+                setSelectorOpen(false);
+            }
+        };
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, []);
 
     // Load full plan data when selection changes
     useEffect(() => {
@@ -149,89 +160,15 @@ export function PlanningTab({ patientId }: Props) {
     return (
         <div className="h-full flex flex-col">
 
-            {/* Plan selector bar */}
-            <div className="flex-none mb-3 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-
-                    {/* Selector dropdown */}
-                    {plans.length > 0 ? (
-                        <div className="relative">
-                            <button
-                                type="button"
-                                onClick={() => setSelectorOpen(v => !v)}
-                                className="flex items-center gap-2 h-8 px-3 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 hover:border-gray-300 transition-colors shadow-sm"
-                            >
-                                <FileText className="h-3.5 w-3.5 text-gray-400" />
-                                {selectedPlan ? (
-                                    <>
-                                        {selectedPlan.status === "DRAFT"
-                                            ? <span>Borrador</span>
-                                            : <span>Plan del {formatDate(selectedPlan.finalizedAt ?? selectedPlan.date)}</span>
-                                        }
-                                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${selectedPlan.status === "DRAFT" ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
-                                            {selectedPlan.status === "DRAFT" ? "BORRADOR" : "FINALIZADO"}
-                                        </span>
-                                    </>
-                                ) : <span>Sin planificación</span>}
-                                <ChevronDown className={`h-3.5 w-3.5 text-gray-400 transition-transform ${selectorOpen ? "rotate-180" : ""}`} />
-                            </button>
-
-                            {selectorOpen && (
-                                <div className="absolute left-0 top-full mt-1 z-20 w-64 bg-white border border-gray-100 rounded-xl shadow-lg py-1.5 text-xs">
-                                    {plans.map(p => (
-                                        <button
-                                            key={p.id} type="button"
-                                            onClick={() => { setSelectedId(p.id); setSelectorOpen(false); }}
-                                            className={`w-full flex items-center justify-between px-3 py-2 hover:bg-gray-50 transition-colors ${p.id === selectedId ? "text-[#1DBF73] font-bold" : "text-gray-700"}`}
-                                        >
-                                            <span>{p.status === "DRAFT" ? "Borrador" : `Plan del ${formatDate(p.finalizedAt ?? p.date)}`}</span>
-                                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${p.status === "DRAFT" ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
-                                                {p.status === "DRAFT" ? "BORRADOR" : "FINALIZADO"}
-                                            </span>
-                                        </button>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    ) : (
-                        <span className="text-xs text-gray-400">Sin planificaciones</span>
-                    )}
-
-                    {/* New plan button */}
-                    {!plans.some(p => p.status === "DRAFT") && (
-                        <button type="button" onClick={handleNewPlan} disabled={saving}
-                            className="flex items-center gap-1.5 h-8 px-3 bg-white border border-dashed border-gray-300 rounded-lg text-xs font-semibold text-gray-500 hover:border-[#1DBF73] hover:text-[#1DBF73] transition-colors">
-                            <Plus className="h-3.5 w-3.5" />
-                            Nueva planificación
-                        </button>
-                    )}
+            {/* Nueva planificación — solo si no hay borrador activo */}
+            {!selectedId && !plans.some(p => p.status === "DRAFT") && (
+                <div className="flex-none mb-3">
+                    <button type="button" onClick={handleNewPlan} disabled={saving}
+                        className="flex items-center gap-1.5 h-8 px-3 bg-white border border-dashed border-gray-300 rounded-lg text-xs font-semibold text-gray-500 hover:border-[#1DBF73] hover:text-[#1DBF73] transition-colors">
+                        <Plus className="h-3.5 w-3.5" /> Nueva planificación
+                    </button>
                 </div>
-
-                {/* Action buttons */}
-                <div className="flex items-center gap-2">
-                    {isDraft && (
-                        <>
-                            <button type="button" onClick={handleSave} disabled={saving}
-                                className="flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-600 hover:border-gray-300 shadow-sm transition-colors disabled:opacity-50">
-                                <Save className="h-3.5 w-3.5" />
-                                {saving ? "Guardando..." : "Guardar borrador"}
-                            </button>
-                            <button type="button" onClick={handleFinalize} disabled={saving}
-                                className="flex items-center gap-1.5 h-8 px-4 bg-[#1DBF73] text-white rounded-lg text-xs font-bold shadow-sm hover:bg-[#18a863] transition-colors disabled:opacity-50">
-                                <CheckCircle className="h-3.5 w-3.5" />
-                                Finalizar
-                            </button>
-                        </>
-                    )}
-                    {isReadOnly && (
-                        <button type="button" onClick={handleReopen} disabled={saving}
-                            className="flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-600 hover:border-amber-400 hover:text-amber-600 shadow-sm transition-colors disabled:opacity-50">
-                            <RotateCcw className="h-3.5 w-3.5" />
-                            Editar
-                        </button>
-                    )}
-                </div>
-            </div>
+            )}
 
             {/* No plan state */}
             {!selectedId && (
@@ -245,17 +182,77 @@ export function PlanningTab({ patientId }: Props) {
                 </div>
             )}
 
-            {/* Sub-menu pills + content */}
+            {/* Sub-menu pills + action buttons en la misma fila */}
             {selectedId && (
                 <>
-                    <div className="flex-none mb-3 overflow-x-auto pb-1 scrollbar-hide">
-                        <div className="flex gap-2">
+                    <div className="flex-none mb-3 flex items-center justify-between gap-3">
+                        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide shrink min-w-0">
                             {SECTIONS.map(({ key, label }) => (
                                 <button key={key} onClick={() => setActiveSection(key)}
                                     className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${activeSection === key ? "bg-[#1DBF73] text-white shadow-md shadow-green-100" : "bg-white text-gray-500 hover:bg-gray-50 hover:text-gray-900 border border-transparent hover:border-gray-200"}`}>
                                     {label}
                                 </button>
                             ))}
+                        </div>
+
+                        {/* Botones de acción + selector */}
+                        <div className="flex items-center gap-2 shrink-0">
+                            {isDraft && (
+                                <>
+                                    <button type="button" onClick={handleSave} disabled={saving}
+                                        className="flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-full text-xs font-bold text-gray-600 hover:border-gray-300 shadow-sm transition-colors disabled:opacity-50">
+                                        <Save className="h-3.5 w-3.5" />
+                                        {saving ? "Guardando..." : "Guardar borrador"}
+                                    </button>
+                                    <button type="button" onClick={handleFinalize} disabled={saving}
+                                        className="flex items-center gap-1.5 h-8 px-4 bg-[#1DBF73] text-white rounded-full text-xs font-bold shadow-sm hover:bg-[#18a863] transition-colors disabled:opacity-50">
+                                        <CheckCircle className="h-3.5 w-3.5" />
+                                        Finalizar
+                                    </button>
+                                </>
+                            )}
+                            {isReadOnly && (
+                                <button type="button" onClick={handleReopen} disabled={saving}
+                                    className="flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-full text-xs font-bold text-gray-600 hover:border-amber-400 hover:text-amber-600 shadow-sm transition-colors disabled:opacity-50">
+                                    <RotateCcw className="h-3.5 w-3.5" />
+                                    Editar
+                                </button>
+                            )}
+
+                            {/* Selector de planificaciones */}
+                            {plans.length > 0 && (
+                                <div className="relative" ref={selectorRef}>
+                                    <button type="button" onClick={() => setSelectorOpen(v => !v)}
+                                        className="flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-full text-xs font-bold text-gray-600 hover:border-gray-300 shadow-sm transition-colors">
+                                        <FileText className="h-3.5 w-3.5 text-gray-400" />
+                                        {selectedPlan?.status === "DRAFT"
+                                            ? "Borrador"
+                                            : selectedPlan ? formatDate(selectedPlan.finalizedAt ?? selectedPlan.date)
+                                            : "Planificaciones"}
+                                        <ChevronDown className={`h-3 w-3 text-gray-400 transition-transform ${selectorOpen ? "rotate-180" : ""}`} />
+                                    </button>
+                                    {selectorOpen && (
+                                        <div className="absolute right-0 top-full mt-1 z-20 w-60 bg-white border border-gray-100 rounded-xl shadow-lg py-1.5 text-xs">
+                                            {plans.map(p => (
+                                                <button key={p.id} type="button"
+                                                    onClick={() => { setSelectedId(p.id); setSelectorOpen(false); }}
+                                                    className={`w-full flex items-center justify-between px-3 py-2 hover:bg-gray-50 transition-colors ${p.id === selectedId ? "text-[#1DBF73] font-bold" : "text-gray-700"}`}>
+                                                    <span>{p.status === "DRAFT" ? "Borrador" : `Plan ${formatDate(p.finalizedAt ?? p.date)}`}</span>
+                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${p.status === "DRAFT" ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
+                                                        {p.status === "DRAFT" ? "BORRADOR" : "FINALIZADO"}
+                                                    </span>
+                                                </button>
+                                            ))}
+                                            {!plans.some(p => p.status === "DRAFT") && (
+                                                <button type="button" onClick={() => { handleNewPlan(); setSelectorOpen(false); }}
+                                                    className="w-full flex items-center gap-1.5 px-3 py-2 text-[#1DBF73] hover:bg-green-50 transition-colors border-t border-gray-100 mt-1 pt-2">
+                                                    <Plus className="h-3 w-3" /> Nueva planificación
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     </div>
 
