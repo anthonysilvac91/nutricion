@@ -1,104 +1,107 @@
+import { API_BASE_URL } from "@/lib/api";
+
+export type SubscriptionStatus = "TRIALING" | "ACTIVE" | "EXPIRED" | "BLOCKED";
+
 export interface Nutritionist {
     id: string;
-    fullName: string;
     email: string;
-    status: "ACTIVE" | "SUSPENDED";
+    subscriptionStatus: SubscriptionStatus;
+    trialEndsAt: string | null;
     patientsCount: number;
     createdAt: string;
-    lastLoginAt?: string | null;
 }
 
-// In-memory mock database
-let dbNutritionists: Nutritionist[] = [
-    {
-        id: "1",
-        fullName: "Dr. Ana Silva",
-        email: "ana.silva@demo.com",
-        status: "ACTIVE",
-        patientsCount: 45,
-        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-        lastLoginAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-        id: "2",
-        fullName: "Carlos Mendoza",
-        email: "cmendoza@nutri.cl",
-        status: "ACTIVE",
-        patientsCount: 120,
-        createdAt: new Date(Date.now() - 150 * 24 * 60 * 60 * 1000).toISOString(),
-        lastLoginAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-        id: "3",
-        fullName: "Laura Gutiérrez",
-        email: "laura.g@demo.com",
-        status: "SUSPENDED",
-        patientsCount: 5,
-        createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-        lastLoginAt: null,
-    }
-];
+interface ApiNutritionist {
+    id: string;
+    email: string;
+    createdAt: string;
+    subscriptionStatus: SubscriptionStatus;
+    trialEndsAt: string | null;
+    _count?: {
+        patients?: number;
+    };
+}
 
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+interface PaginatedResponse<T> {
+    data: T[];
+    meta: {
+        total: number;
+        page: number;
+        pageSize: number;
+        totalPages: number;
+    };
+}
+
+const getHeaders = () => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    return {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+};
+
+const handleResponse = async <T>(res: Response): Promise<T> => {
+    if (!res.ok) {
+        const error = await res.json().catch(() => ({ message: "Error desconocido" }));
+        throw new Error(error.message || "Error en la petición");
+    }
+
+    return res.json() as Promise<T>;
+};
+
+const mapNutritionist = (item: ApiNutritionist): Nutritionist => ({
+    id: item.id,
+    email: item.email,
+    createdAt: item.createdAt,
+    subscriptionStatus: item.subscriptionStatus,
+    trialEndsAt: item.trialEndsAt,
+    patientsCount: item._count?.patients ?? 0,
+});
 
 export const nutritionistsService = {
     async list(params: { q?: string; status?: string; page?: number; pageSize?: number }): Promise<{ data: Nutritionist[]; total: number }> {
-        await delay(600);
-        let result = [...dbNutritionists];
+        const searchParams = new URLSearchParams();
+        searchParams.set("page", String(params.page || 1));
+        searchParams.set("pageSize", String(params.pageSize || 10));
 
         if (params.q) {
-            const query = params.q.toLowerCase();
-            result = result.filter(n => n.fullName.toLowerCase().includes(query) || n.email.toLowerCase().includes(query));
+            searchParams.set("search", params.q);
         }
 
         if (params.status && params.status !== "ALL") {
-            result = result.filter(n => n.status === params.status);
+            searchParams.set("status", params.status);
         }
 
-        const page = params.page || 1;
-        const pageSize = params.pageSize || 10;
-        const total = result.length;
+        const res = await fetch(`${API_BASE_URL}/admin/nutritionists?${searchParams.toString()}`, {
+            method: "GET",
+            headers: getHeaders(),
+        });
+        const payload = await handleResponse<PaginatedResponse<ApiNutritionist>>(res);
 
-        const start = (page - 1) * pageSize;
-        const data = result.slice(start, start + pageSize);
-
-        return { data, total };
-    },
-
-    async create(payload: { fullName: string; email: string; password?: string }): Promise<Nutritionist> {
-        await delay(800);
-        const newDoc: Nutritionist = {
-            id: Math.random().toString(36).substring(7),
-            fullName: payload.fullName,
-            email: payload.email,
-            status: "ACTIVE",
-            patientsCount: 0,
-            createdAt: new Date().toISOString(),
-            lastLoginAt: null,
+        return {
+            data: payload.data.map(mapNutritionist),
+            total: payload.meta.total,
         };
-        dbNutritionists = [newDoc, ...dbNutritionists];
-        return newDoc;
     },
 
-    async update(id: string, payload: { fullName?: string; status?: "ACTIVE" | "SUSPENDED" }): Promise<Nutritionist> {
-        await delay(500);
-        const idx = dbNutritionists.findIndex(n => n.id === id);
-        if (idx === -1) throw new Error("Nutritionist not found");
+    async update(id: string, payload: { subscriptionStatus?: SubscriptionStatus; extendTrialDays?: number }): Promise<Nutritionist> {
+        const body: { setStatus?: SubscriptionStatus; extendTrialDays?: number } = {};
 
-        const updated = { ...dbNutritionists[idx], ...payload };
-        dbNutritionists[idx] = updated;
-        return updated;
+        if (payload.subscriptionStatus) {
+            body.setStatus = payload.subscriptionStatus;
+        }
+
+        if (payload.extendTrialDays && payload.extendTrialDays > 0) {
+            body.extendTrialDays = payload.extendTrialDays;
+        }
+
+        const res = await fetch(`${API_BASE_URL}/admin/nutritionists/${id}`, {
+            method: "PATCH",
+            headers: getHeaders(),
+            body: JSON.stringify(body),
+        });
+        const updated = await handleResponse<ApiNutritionist>(res);
+
+        return mapNutritionist(updated);
     },
-
-    async resetPassword(id: string): Promise<void> {
-        await delay(600);
-        const exists = dbNutritionists.some(n => n.id === id);
-        if (!exists) throw new Error("Nutritionist not found");
-        // Simulate password reset logic (could send email internally)
-    },
-
-    async remove(id: string): Promise<void> {
-        await delay(700);
-        dbNutritionists = dbNutritionists.filter(n => n.id !== id);
-    }
 };

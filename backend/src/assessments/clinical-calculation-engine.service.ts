@@ -67,7 +67,8 @@ export class ClinicalCalculationEngineService {
         const weight = dataMap.get('m_weight') as number;
         const heightCm = dataMap.get('m_height') as number;
 
-        if (!weight || !heightCm) {
+        // Check if data is physically present
+        if (weight === undefined || heightCm === undefined) {
             results.push({
                 metricId: 'BMI',
                 status: ResultStatus.MISSING_DATA,
@@ -80,6 +81,20 @@ export class ClinicalCalculationEngineService {
 
         const heightM = heightCm / 100;
         const bmiValue = weight / (heightM * heightM);
+
+        // Defensive check for mathematical edge cases (NaN, Infinity, or division by zero)
+        if (isNaN(bmiValue) || !isFinite(bmiValue) || heightCm <= 0) {
+            this.logger.warn(`Invalid BMI parameters: weight=${weight}, height=${heightCm} -> Result: ${bmiValue}`);
+            results.push({
+                metricId: 'BMI',
+                status: ResultStatus.NOT_APPLICABLE,
+                formulaUsed: 'ADULT_BMI_STANDARD',
+                formulaVersion: 'v1.0.0',
+                engineVersion: this.ENGINE_VERSION,
+                metadataAsJson: { error: 'Mathematical error or invalid physical value', weight, heightCm }
+            });
+            return;
+        }
 
         let statusCode = 'NORMAL';
         let statusLabel = 'Normal';

@@ -1,6 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
 import { NestFactory } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
 
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -8,8 +9,12 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  const configService = app.get(ConfigService);
 
-  app.enableCors(); // Enable CORS for frontend access
+  app.enableCors({
+    origin: true,
+    credentials: true,
+  }); // Enable CORS for frontend access
   app.use(helmet());
 
   app.useGlobalPipes(
@@ -33,6 +38,7 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, document);
 
-  await app.listen(4000); // Changed to port 4000 to avoid conflict with Next.js
+  const port = configService.get<number>('PORT', 4100);
+  await app.listen(port);
 }
 bootstrap();

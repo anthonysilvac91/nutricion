@@ -2,12 +2,11 @@
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { ShieldAlert, Plus, Loader2 } from "lucide-react"
+import { ShieldAlert, Loader2 } from "lucide-react"
 
 import { Button } from "@/components/ui/Button"
 import { NutritionistsFilters } from "@/components/admin/nutritionists/NutritionistsFilters"
 import { NutritionistsTable } from "@/components/admin/nutritionists/NutritionistsTable"
-import { NutritionistFormModal } from "@/components/admin/nutritionists/NutritionistFormModal"
 import { NutritionistEditDrawer } from "@/components/admin/nutritionists/NutritionistEditDrawer"
 
 import { Nutritionist, nutritionistsService } from "@/services/nutritionistsService"
@@ -31,7 +30,6 @@ export default function AdminNutritionistsPage() {
     const pageSize = 10
 
     // Modals
-    const [isCreateOpen, setIsCreateOpen] = useState(false)
     const [editingUser, setEditingUser] = useState<Nutritionist | null>(null)
 
     const fetchNutritionists = async () => {
@@ -41,8 +39,8 @@ export default function AdminNutritionistsPage() {
             const res = await nutritionistsService.list({ q: search, status, page, pageSize })
             setNutritionists(res.data)
             setTotal(res.total)
-        } catch (err: any) {
-            setError(err.message || "Error al cargar nutricionistas")
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "Error al cargar nutricionistas")
         } finally {
             setIsLoading(false)
         }
@@ -91,10 +89,6 @@ export default function AdminNutritionistsPage() {
                     <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Nutricionistas</h1>
                     <p className="text-sm text-gray-500 mt-1">Administra cuentas de nutricionistas del sistema.</p>
                 </div>
-                <Button onClick={() => setIsCreateOpen(true)} className="w-full sm:w-auto">
-                    <Plus className="h-4 w-4 mr-2" />
-                    Crear nutricionista
-                </Button>
             </div>
 
             {/* Content Area */}
@@ -152,12 +146,6 @@ export default function AdminNutritionistsPage() {
             </div>
 
             {/* Global Modals */}
-            <NutritionistFormModal
-                isOpen={isCreateOpen}
-                onClose={() => setIsCreateOpen(false)}
-                onSuccess={fetchNutritionists}
-            />
-
             <NutritionistEditDrawer
                 isOpen={!!editingUser}
                 nutritionist={editingUser}

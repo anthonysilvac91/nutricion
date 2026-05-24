@@ -1,3 +1,4 @@
+import { API_BASE_URL } from "@/lib/api";
 export type MeasurementGroup = 'BASIC' | 'COMPOSITION' | 'SKINFOLD' | 'GIRTH';
 
 export const GROUP_LABELS: Record<MeasurementGroup, string> = {
@@ -37,6 +38,7 @@ const mockDefinitions: MeasurementDefinition[] = [
     { id: 'm_lean_mass', group: 'COMPOSITION', name: 'Masa magra', unit: 'kg' },
     { id: 'm_muscle_mass', group: 'COMPOSITION', name: 'Masa muscular', unit: 'kg' },
     { id: 'm_bone_mass', group: 'COMPOSITION', name: 'Masa ósea', unit: 'kg' },
+    { id: 'm_fat_percent', group: 'COMPOSITION', name: 'Porcentaje de grasa', unit: '%' },
 
     // SKINFOLD (Pliegues cutáneos)
     { id: 'sf_abdominal', group: 'SKINFOLD', name: 'Pliegue cutáneo abdominal', unit: 'mm' },
@@ -118,7 +120,7 @@ export const measurementsService = {
         // MIGRACIÓN: Ahora sí consumimos el backend real usando fetch
         try {
             const token = localStorage.getItem('token') || '';
-            const res = await fetch(`http://localhost:3000/patients/${patientId}/assessments/latest`, {
+            const res = await fetch(`${API_BASE_URL}/patients/${patientId}/assessments/latest`, {
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }
@@ -173,7 +175,7 @@ export const measurementsService = {
                 }))
             };
 
-            const res = await fetch(`http://localhost:3000/patients/${patientId}/assessments`, {
+            const res = await fetch(`${API_BASE_URL}/patients/${patientId}/assessments`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

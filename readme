@@ -1,61 +1,104 @@
-iniciar docker: sudo systemctl start docker
-apagar contenedor docker: docker compose down
-apagar docker: sudo systemctl stop docker
+# Nutricion - guia rapida local
 
-proyecto en pc nueva
+Proyecto web con backend NestJS, frontend Next.js y base de datos PostgreSQL.
 
-verificar node: node -v
-npm -v
-instalar si no esta: 
-1. curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-2. sudo apt install -y nodejs
+## Requisitos
 
-cd backend
+- Node.js 20+
+- npm
+- Docker Desktop o Docker Engine
+
+## Base de datos
+
+El `docker-compose.yml` esta en `backend/`.
+
+La base local de Nutricion usa PostgreSQL dentro del contenedor `nutricion_db` y publica el puerto `5433` del host hacia el `5432` del contenedor. Esto evita conflicto con otros proyectos que usen `localhost:5432`.
+
+Desde `backend/`:
+
+```bash
+docker compose up -d
+```
+
+Validar estado:
+
+```bash
+docker ps
+npx prisma migrate status
+```
+
+La URL esperada en `backend/.env` es:
+
+```env
+DATABASE_URL="postgresql://nutricion_user:nutricion_pass@localhost:5433/nutricion?schema=public"
+```
+
+## Backend
+
+Desde `backend/`:
+
+```bash
 npm install
 npx prisma generate
 npx prisma migrate dev
+npx ts-node prisma/seed-catalogs.ts
 npm run start:dev
+```
 
-cd frontend
+API:
+
+- Backend: `http://localhost:4100`
+- Swagger: `http://localhost:4100/api`
+
+Variables relevantes en `backend/.env`:
+
+```env
+DATABASE_URL="postgresql://nutricion_user:nutricion_pass@localhost:5433/nutricion?schema=public"
+JWT_SECRET="secret_super_seguro_123"
+JWT_EXPIRES_IN=1d
+PORT=4100
+ADMIN_EMAIL="admin@nutriapp.com"
+ADMIN_PASSWORD="admin123"
+```
+
+## Frontend
+
+Desde `frontend/`:
+
+```bash
 npm install
 npm run dev
+```
 
-🚀 Puesta en marcha
-1. Iniciar base de datos con Docker
+Frontend:
 
-Desde la raíz del proyecto ejecuta:
+- `http://localhost:3100`
 
-sudo docker compose up -d
+La URL del backend se configura en `frontend/.env.local`:
 
+```env
+NEXT_PUBLIC_API_URL=http://localhost:4100
+```
 
-Este comando levantará la base de datos PostgreSQL necesaria para el backend.
+## Tests
 
-2. Iniciar Backend (NestJS)
+Desde `backend/`:
 
-Desde la carpeta del backend:
+```bash
+npm run build
+npm run test
+npm run test:e2e
+```
 
-npm run start:dev
+Estado verificado el 2026-05-23:
 
+- Backend build: OK.
+- Backend unit tests: OK.
+- Backend e2e tests: OK.
+- Frontend build: OK.
+- Lint backend/frontend: pendiente, actualmente falla por deuda tecnica.
 
-El backend se iniciará en modo desarrollo y quedará listo para recibir solicitudes.
+## Notas
 
-3. Iniciar Frontend (Next.js)
-
-Desde la carpeta del frontend:
-
-npm run dev
-
-
-El frontend estará disponible en el navegador y se comunicará con la API del backend.
-
-🗄️ Base de datos
-Validar y administrar datos con Prisma Studio
-
-Para visualizar y gestionar los datos de la base de datos PostgreSQL, ejecuta:
-
-npx prisma studio
-
-
-Esto abrirá una interfaz web donde podrás inspeccionar y editar los registros.
-
-
+- Si Prisma falla con credenciales contra `localhost:5432`, probablemente esta conectando a otra base local. Nutricion debe usar `localhost:5433`.
+- El documento `TECHNICAL_DEBT.md` contiene la deuda tecnica priorizada.

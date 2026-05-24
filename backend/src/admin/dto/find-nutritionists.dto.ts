@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { SubscriptionStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class FindNutritionistsDto {
     @ApiPropertyOptional({ description: 'Página actual', default: 1 })
@@ -21,4 +22,9 @@ export class FindNutritionistsDto {
     @IsOptional()
     @IsString()
     search?: string;
+
+    @ApiPropertyOptional({ enum: SubscriptionStatus, description: 'Filtro por estado de suscripcion' })
+    @IsOptional()
+    @IsEnum(SubscriptionStatus)
+    status?: SubscriptionStatus;
 }

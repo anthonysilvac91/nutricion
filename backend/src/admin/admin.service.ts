@@ -30,6 +30,7 @@ export class AdminService {
         const where: any = {
             role: UserRole.NUTRITIONIST,
             ...(search && { email: { contains: search, mode: 'insensitive' } }),
+            ...(query.status && { subscriptionStatus: query.status }),
         };
 
         const [data, total] = await this.prisma.$transaction([
@@ -38,7 +39,14 @@ export class AdminService {
                 skip,
                 take: pageSize,
                 orderBy: { createdAt: 'desc' },
-                select: { id: true, email: true, createdAt: true, subscriptionStatus: true, trialEndsAt: true },
+                select: {
+                    id: true,
+                    email: true,
+                    createdAt: true,
+                    subscriptionStatus: true,
+                    trialEndsAt: true,
+                    _count: { select: { patients: true } },
+                },
             }),
             this.prisma.user.count({ where }),
         ]);

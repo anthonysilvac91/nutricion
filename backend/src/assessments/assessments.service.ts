@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAssessmentDto } from './dto/create-assessment.dto';
 import { ContextResolverService } from './context-resolver.service';
@@ -13,9 +13,39 @@ export class AssessmentsService {
         private readonly engine: ClinicalCalculationEngineService,
     ) { }
 
-    async create(patientId: string, dto: CreateAssessmentDto) {
-        const patient = await this.prisma.patient.findUnique({
-            where: { id: patientId },
+    async create(userId: string, patientId: string, dto: CreateAssessmentDto) {
+        // 0. Initial Validations
+        if (!dto.measurements || dto.measurements.length === 0) {
+            throw new BadRequestException('At least one measurement is required');
+        }
+
+        const definitionIds = dto.measurements.map(m => m.definitionId);
+
+        // Check for empty IDs
+        if (definitionIds.some(id => !id)) {
+            throw new BadRequestException('Measurement definitionId cannot be empty');
+        }
+
+        // Check for duplicates in the same payload
+        const uniqueIds = new Set(definitionIds);
+        if (uniqueIds.size !== definitionIds.length) {
+            throw new BadRequestException('Duplicate measurement definitions in the same assessment are not allowed');
+        }
+
+        // Verify definitions existence in DB
+        const existingDefinitions = await this.prisma.measurementDefinition.findMany({
+            where: { id: { in: definitionIds } },
+            select: { id: true }
+        });
+
+        if (existingDefinitions.length !== definitionIds.length) {
+            const existingIds = existingDefinitions.map(d => d.id);
+            const missingIds = definitionIds.filter(id => !existingIds.includes(id));
+            throw new BadRequestException(`The following measurement definitions do not exist: ${missingIds.join(', ')}`);
+        }
+
+        const patient = await this.prisma.patient.findFirst({
+            where: { id: patientId, userId },
         });
 
         if (!patient) {
@@ -86,12 +116,15 @@ export class AssessmentsService {
             return assessment;
         });
 
-        return this.findOne(newAssessment.id);
+        return this.findOne(userId, newAssessment.id);
     }
 
-    async findOne(id: string) {
-        const assessment = await this.prisma.assessment.findUnique({
-            where: { id },
+    async findOne(userId: string, id: string) {
+        const assessment = await this.prisma.assessment.findFirst({
+            where: {
+                id,
+                patient: { userId },
+            },
             include: {
                 measurements: true,
                 results: true,
@@ -104,9 +137,20 @@ export class AssessmentsService {
         return this.mapToUiResponse(assessment);
     }
 
-    async findLatestByPatient(patientId: string) {
+    async findLatestByPatient(userId: string, patientId: string) {
+        const patient = await this.prisma.patient.findFirst({
+            where: { id: patientId, userId },
+            select: { id: true },
+        });
+
+        if (!patient) {
+            throw new NotFoundException('Patient not found');
+        }
+
         const assessment = await this.prisma.assessment.findFirst({
-            where: { patientId },
+            where: {
+                patientId,
+            },
             orderBy: { date: 'desc' },
             include: {
                 measurements: true,

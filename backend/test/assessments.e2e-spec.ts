@@ -6,7 +6,9 @@ import { AppModule } from './../src/app.module';
 describe('Assessments (e2e)', () => {
     let app: INestApplication;
     let token: string;
+    let secondToken: string;
     let patientId: string;
+    let secondPatientId: string;
     let assessmentId: string;
 
     beforeAll(async () => {
@@ -40,6 +42,27 @@ describe('Assessments (e2e)', () => {
             .expect(201);
 
         patientId = resPatient.body.id;
+
+        const resSecondAuth = await request(app.getHttpServer())
+            .post('/auth/register')
+            .send({ email: `e2e-other-${Date.now()}@test.com`, password: 'password123' })
+            .expect(201);
+
+        secondToken = resSecondAuth.body.access_token;
+
+        const resSecondPatient = await request(app.getHttpServer())
+            .post('/patients')
+            .set('Authorization', `Bearer ${secondToken}`)
+            .send({
+                firstName: 'Other',
+                lastName: 'Owner',
+                sex: 'FEMALE',
+                birthDate: '1992-01-01T00:00:00.000Z',
+                activityLevel: 'LIGHT'
+            })
+            .expect(201);
+
+        secondPatientId = resSecondPatient.body.id;
     });
 
     afterAll(async () => {
@@ -72,6 +95,44 @@ describe('Assessments (e2e)', () => {
         expect(bmiResult.status).toBe('CALCULATED');
 
         assessmentId = res.body.id;
+    });
+
+    it('GET /assessments/:id - returns an assessment for its owner', async () => {
+        const res = await request(app.getHttpServer())
+            .get(`/assessments/${assessmentId}`)
+            .set('Authorization', `Bearer ${token}`)
+            .expect(200);
+
+        expect(res.body.id).toBe(assessmentId);
+    });
+
+    it('GET /assessments/:id - does not expose assessments across users', async () => {
+        await request(app.getHttpServer())
+            .get(`/assessments/${assessmentId}`)
+            .set('Authorization', `Bearer ${secondToken}`)
+            .expect(404);
+    });
+
+    it('POST /patients/:id/assessments - does not create assessments for another user patient', async () => {
+        await request(app.getHttpServer())
+            .post(`/patients/${secondPatientId}/assessments`)
+            .set('Authorization', `Bearer ${token}`)
+            .send({
+                date: '2026-03-01T10:00:00.000Z',
+                status: 'COMPLETED',
+                measurements: [
+                    { definitionId: 'm_weight', numericValue: 80 },
+                    { definitionId: 'm_height', numericValue: 180 }
+                ]
+            })
+            .expect(404);
+    });
+
+    it('GET /patients/:id/assessments/latest - does not expose latest assessment across users', async () => {
+        await request(app.getHttpServer())
+            .get(`/patients/${patientId}/assessments/latest`)
+            .set('Authorization', `Bearer ${secondToken}`)
+            .expect(404);
     });
 
     it('POST /patients/:id/assessments - handles missing data and not applicable cases', async () => {

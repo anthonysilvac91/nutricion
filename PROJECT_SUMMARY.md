@@ -1,67 +1,129 @@
-# Resumen del Proyecto: Nutrición
+# Resumen del Proyecto: Nutricion
 
-Este documento tiene como objetivo proporcionar contexto inmediato a cualquier IA o desarrollador que se integre al proyecto, detallando el stack tecnológico, la arquitectura actual y el estado de avance.
+Fecha de actualizacion: 2026-05-23
 
-## 🏗️ Arquitectura y Stack Tecnológico
+Este documento resume el estado actual del proyecto para onboarding tecnico rapido.
 
-El proyecto es una aplicación web dividida en **Frontend** y **Backend**, con una base de datos relacional.
+## Arquitectura
 
-### 1. Backend (Directorio `/backend`)
-- **Framework:** NestJS (v11)
-- **Lenguaje:** TypeScript
-- **Base de Datos:** PostgreSQL
-- **ORM:** Prisma (v6)
-- **Autenticación:** JWT usando `@nestjs/jwt`, `@nestjs/passport` y `bcrypt` para el hashing de contraseñas.
-- **Documentación API:** Swagger (disponible vía `@nestjs/swagger`).
-- **Módulos Principales (en `src/`):**
-  - `auth/`: Manejo de autenticación y autorización.
-  - `health/`: Endpoints de health check.
-  - `patients/`: CRUD de pacientes.
+El proyecto esta dividido en dos aplicaciones:
 
-### 2. Frontend (Directorio `/frontend`)
-- **Framework:** Next.js (v16.1.4) usando el **App Router** (`app/`).
-- **Lenguaje:** TypeScript
-- **Estilos:** Tailwind CSS (v4)
-- **Formularios y Validación:** `react-hook-form` administrado junto con `@hookform/resolvers` y `zod`.
-- **Iconografía:** `lucide-react`.
-- **Manejo de Fechas:** `date-fns`.
-- **Estructura de Rutas:**
-  - Rutas de aplicación principal agrupadas en `(app)`.
-  - Rutas de autenticación agrupadas en `(auth)`.
+- `backend/`: API NestJS con Prisma y PostgreSQL.
+- `frontend/`: aplicacion Next.js con App Router.
 
-### 3. Infraestructura
-- **Docker Compose:** Se incluye un archivo `docker-compose.yml` en la raíz para levantar la base de datos PostgreSQL localmente de manera rápida.
+La base de datos local se levanta con Docker Compose desde `backend/docker-compose.yml` y queda disponible en `localhost:5433`.
 
----
+## Backend
 
-## 🗄️ Esquema de Base de Datos (Prisma)
+Stack:
 
-El modelo de datos actual soporta relaciones para la gestión de clínicas o consultas nutricionales:
+- NestJS 11.
+- TypeScript.
+- PostgreSQL.
+- Prisma 6.
+- JWT con roles.
+- Swagger en `/api`.
 
-- **User**: Representa a los profesionales (o administradores).
-  - Incluye `id`, `email`, `passwordHash`, y un Enum `role` (`ADMIN` o `NUTRITIONIST`).
-  - Relación 1 a muchos con `Patient`.
-- **Patient**: Detalles demográficos y biológicos de los pacientes.
-  - Campos clave: `firstName`, `lastName`, `sex` (enum), `birthDate`, `activityLevel` (enum).
-  - Relación 1 a muchos con `Measurement` y `Result`.
-- **Measurement**: Historial de mediciones antropométricas.
-  - Campos clave: `weightKg`, `heightCm`, `waistCm`, `measuredAt`.
-- **Result**: Cálculos o diagnósticos resultantes de las mediciones.
-  - Campos clave: `bmi`, `bmiClass`, `tdeeKcal`.
+Modulos principales:
 
----
+- `auth`: registro, login, usuario autenticado y JWT.
+- `patients`: CRUD de pacientes, resumen y contexto de planificacion.
+- `assessments`: evaluaciones clinicas, mediciones y resultados calculados.
+- `admin`: gestion de nutricionistas y estados de suscripcion.
+- `health`: health check.
 
-## 🚀 Cómo ejecutar el proyecto en local
+Seguridad:
 
-1. **Base de datos:** En la raíz del proyecto, ejecuta `docker compose up -d` para iniciar PostgreSQL. Alternativamente puedes explorar los datos usando `npx prisma studio`.
-2. **Backend:** Dentro de `/backend`, ejecutar `npm run start:dev` (por defecto se levantará usando la configuración de NestJS).
-3. **Frontend:** Dentro de `/frontend`, ejecutar `npm run dev` (levantará el entorno de Next.js típicamente en `localhost:3000`).
+- Roles: `ADMIN`, `NUTRITIONIST`.
+- Estados de suscripcion: `TRIALING`, `ACTIVE`, `EXPIRED`, `BLOCKED`.
+- Los endpoints de escritura estan protegidos por estado de suscripcion.
+- Los endpoints de assessments validan pertenencia del paciente al usuario autenticado.
 
----
+## Frontend
 
-## 📍 Estado Actual (Lo que está hecho)
+Stack:
 
-1. **Estructura base completa:** Los repositorios de frontend y backend ya están inicializados con sus configuraciones de linting (ESLint/Prettier) y TypeScript.
-2. **Modelado de BD:** El esquema principal de Prisma está definido, abarcando Usuarios, Pacientes, Mediciones y Resultados.
-3. **Módulos de Backend iniciados:** Existen los módulos para `auth`, `health` y `patients`, lo cual indica que la lógica de autenticación y la gestión básica de pacientes ya está enrutada.
-4. **Layout frontend:** El App Router de Next.js está configurado, separando correctamente las rutas públicas/de ingreso (`(auth)`) de las rutas internas (`(app)`). Hay dependencias instaladas para manejar UI moderna (Tailwind, Lucide, Radix/Zod).
+- Next.js 16.
+- React 19.
+- TypeScript.
+- Tailwind CSS 4.
+- `react-hook-form`, `zod`, `lucide-react`, `date-fns`, `recharts`.
+
+Rutas principales:
+
+- `/login`
+- `/register`
+- `/dashboard`
+- `/patients`
+- `/patients/[id]`
+- `/patients/[id]/edit`
+- `/admin/nutritionists`
+
+## Base de datos
+
+Modelos principales:
+
+- `User`: usuarios administradores y nutricionistas.
+- `Patient`: pacientes asociados a un nutricionista.
+- `Assessment`: evaluacion clinica de un paciente.
+- `MeasurementDefinition`: catalogo de mediciones disponibles.
+- `MeasurementRecord`: valores capturados dentro de un assessment.
+- `MetricDefinition`: catalogo de metricas calculadas.
+- `CalculatedResult`: resultados calculados por assessment.
+
+Tambien existen modelos legacy:
+
+- `Measurement`
+- `Result`
+
+Estos modelos aun estan presentes y forman parte de la deuda tecnica documentada en `TECHNICAL_DEBT.md`.
+
+## Ejecucion local
+
+Backend:
+
+```bash
+cd backend
+docker compose up -d
+npm install
+npx prisma generate
+npx prisma migrate dev
+npx ts-node prisma/seed-catalogs.ts
+npm run start:dev
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+URLs:
+
+- Frontend: `http://localhost:3100`
+- Backend: `http://localhost:4100`
+- Swagger: `http://localhost:4100/api`
+- PostgreSQL: `localhost:5433`
+
+## Estado de verificacion
+
+Verificado el 2026-05-23:
+
+- `backend npm run build`: OK.
+- `backend npm run test`: OK.
+- `backend npm run test:e2e`: OK.
+- `frontend npm run build`: OK.
+- Lint backend/frontend: pendiente, falla por deuda tecnica conocida.
+
+## Deuda tecnica principal
+
+Ver `TECHNICAL_DEBT.md`.
+
+Prioridades actuales:
+
+1. Retirar mocks del frontend de administracion.
+2. Resolver duplicidad del modelo de mediciones.
+3. Limpiar lint y tipos `any`.
+4. Endurecer configuracion por ambiente.

@@ -33,7 +33,9 @@ export function NutritionistsFilters({ search, status, onSearchChange, onStatusC
             >
                 <option value="ALL">Todos los estados</option>
                 <option value="ACTIVE">Activos</option>
-                <option value="SUSPENDED">Suspendidos</option>
+                <option value="TRIALING">En prueba</option>
+                <option value="EXPIRED">Expirados</option>
+                <option value="BLOCKED">Bloqueados</option>
             </Select>
 
             {(search || status !== "ALL") && (

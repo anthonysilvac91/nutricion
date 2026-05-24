@@ -1,14 +1,33 @@
 "use client"
 
-import { MoreHorizontal, Users, Calendar, EyeOff } from "lucide-react"
+import { Calendar, EyeOff, Users } from "lucide-react"
 import { Button } from "@/components/ui/Button"
-import { Nutritionist } from "@/services/nutritionistsService"
+import { Nutritionist, SubscriptionStatus } from "@/services/nutritionistsService"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
 
 interface Props {
     data: Nutritionist[];
     onEdit: (n: Nutritionist) => void;
+}
+
+const statusLabels: Record<SubscriptionStatus, string> = {
+    TRIALING: "En prueba",
+    ACTIVE: "Activo",
+    EXPIRED: "Expirado",
+    BLOCKED: "Bloqueado",
+}
+
+const statusClasses: Record<SubscriptionStatus, string> = {
+    TRIALING: "bg-blue-100 text-blue-700",
+    ACTIVE: "bg-green-100 text-green-700",
+    EXPIRED: "bg-amber-100 text-amber-700",
+    BLOCKED: "bg-red-100 text-red-700",
+}
+
+const formatDate = (value: string | null) => {
+    if (!value) return "—"
+    return format(new Date(value), "dd MMM yyyy", { locale: es })
 }
 
 export function NutritionistsTable({ data, onEdit }: Props) {
@@ -26,7 +45,6 @@ export function NutritionistsTable({ data, onEdit }: Props) {
 
     return (
         <>
-            {/* Desktop View */}
             <div className="hidden md:block bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm text-left">
@@ -36,7 +54,7 @@ export function NutritionistsTable({ data, onEdit }: Props) {
                                 <th className="px-6 py-4 whitespace-nowrap">Estado</th>
                                 <th className="px-6 py-4 whitespace-nowrap text-center">Pacientes</th>
                                 <th className="px-6 py-4 whitespace-nowrap">Registro</th>
-                                <th className="px-6 py-4 whitespace-nowrap">Último Acceso</th>
+                                <th className="px-6 py-4 whitespace-nowrap">Fin de prueba</th>
                                 <th className="px-6 py-4 whitespace-nowrap text-right">Acciones</th>
                             </tr>
                         </thead>
@@ -44,12 +62,12 @@ export function NutritionistsTable({ data, onEdit }: Props) {
                             {data.map((item) => (
                                 <tr key={item.id} className="hover:bg-gray-50/50 transition-colors">
                                     <td className="px-6 py-4">
-                                        <div className="font-medium text-gray-900">{item.fullName}</div>
-                                        <div className="text-gray-500 text-xs mt-0.5">{item.email}</div>
+                                        <div className="font-medium text-gray-900">{item.email}</div>
+                                        <div className="text-gray-500 text-xs mt-0.5">ID: {item.id.slice(0, 8)}</div>
                                     </td>
                                     <td className="px-6 py-4">
-                                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${item.status === "ACTIVE" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                                            {item.status === "ACTIVE" ? "Activo" : "Suspendido"}
+                                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${statusClasses[item.subscriptionStatus]}`}>
+                                            {statusLabels[item.subscriptionStatus]}
                                         </span>
                                     </td>
                                     <td className="px-6 py-4 text-center">
@@ -59,14 +77,14 @@ export function NutritionistsTable({ data, onEdit }: Props) {
                                         </div>
                                     </td>
                                     <td className="px-6 py-4 text-gray-500 whitespace-nowrap">
-                                        {format(new Date(item.createdAt), "dd MMM yyyy", { locale: es })}
+                                        {formatDate(item.createdAt)}
                                     </td>
                                     <td className="px-6 py-4 text-gray-500 whitespace-nowrap">
-                                        {item.lastLoginAt ? format(new Date(item.lastLoginAt), "dd MMM yyyy", { locale: es }) : "—"}
+                                        {formatDate(item.trialEndsAt)}
                                     </td>
                                     <td className="px-6 py-4 text-right">
                                         <Button variant="ghost" size="sm" onClick={() => onEdit(item)} className="h-8 text-gray-500 hover:text-gray-900">
-                                            Ver detalle
+                                            Administrar
                                         </Button>
                                     </td>
                                 </tr>
@@ -76,17 +94,16 @@ export function NutritionistsTable({ data, onEdit }: Props) {
                 </div>
             </div>
 
-            {/* Mobile View */}
             <div className="md:hidden space-y-4">
                 {data.map((item) => (
                     <div key={item.id} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col gap-3">
                         <div className="flex justify-between items-start gap-4">
                             <div>
-                                <h3 className="font-medium text-gray-900">{item.fullName}</h3>
-                                <p className="text-sm text-gray-500">{item.email}</p>
+                                <h3 className="font-medium text-gray-900">{item.email}</h3>
+                                <p className="text-sm text-gray-500">ID: {item.id.slice(0, 8)}</p>
                             </div>
-                            <span className={`shrink-0 inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${item.status === "ACTIVE" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                                {item.status === "ACTIVE" ? "Activo" : "Suspendido"}
+                            <span className={`shrink-0 inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${statusClasses[item.subscriptionStatus]}`}>
+                                {statusLabels[item.subscriptionStatus]}
                             </span>
                         </div>
 
@@ -97,7 +114,7 @@ export function NutritionistsTable({ data, onEdit }: Props) {
                             </div>
                             <div className="flex items-center gap-1.5">
                                 <Calendar className="h-4 w-4 text-gray-400" />
-                                <span>{format(new Date(item.createdAt), "dd MMM yyyy", { locale: es })}</span>
+                                <span>{formatDate(item.createdAt)}</span>
                             </div>
                         </div>
 

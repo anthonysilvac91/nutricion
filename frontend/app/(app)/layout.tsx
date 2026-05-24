@@ -3,6 +3,7 @@ import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import Sidebar from "@/components/layout/Sidebar"
 import Topbar from "@/components/layout/Topbar"
+import { MockModeProvider } from "@/lib/mock-mode-context"
 
 export default function AppLayout({
     children,
@@ -23,14 +24,16 @@ export default function AppLayout({
     if (!mounted) return null;
 
     return (
-        <div className="min-h-screen bg-[#F3F6F8]">
-            <Sidebar />
-            <div className="flex flex-col md:pl-[220px] min-h-screen transition-all">
-                <Topbar />
-                <main className="flex-1 p-6 md:p-8 max-w-7xl w-full mx-auto animate-in fade-in duration-500">
-                    {children}
-                </main>
+        <MockModeProvider>
+            <div className="min-h-screen bg-[#F3F6F8]">
+                <Sidebar />
+                <div className="flex flex-col md:pl-55 min-h-screen transition-all">
+                    <Topbar />
+                    <main className="flex-1 p-6 max-w-7xl w-full mx-auto animate-in fade-in duration-500">
+                        {children}
+                    </main>
+                </div>
             </div>
-        </div>
+        </MockModeProvider>
     )
 }

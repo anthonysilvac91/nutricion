@@ -1,5 +1,4 @@
-const API_URL = "http://localhost:4000";
-// const API_URL = "https://cw0tcf90-4000.brs.devtunnels.ms";
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4100";
 
 const getHeaders = () => {
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
@@ -20,7 +19,7 @@ const handleResponse = async (res: Response) => {
 export const api = {
     // AUTH
     login: async (email: string, password: string) => {
-        const res = await fetch(`${API_URL}/auth/login`, {
+        const res = await fetch(`${API_BASE_URL}/auth/login`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ email, password }),
@@ -30,7 +29,7 @@ export const api = {
     },
 
     register: async (email: string, password: string) => {
-        const res = await fetch(`${API_URL}/auth/register`, {
+        const res = await fetch(`${API_BASE_URL}/auth/register`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ email, password }),
@@ -40,7 +39,7 @@ export const api = {
     },
 
     getMe: async () => {
-        const res = await fetch(`${API_URL}/auth/me`, {
+        const res = await fetch(`${API_BASE_URL}/auth/me`, {
             method: "GET",
             headers: getHeaders(),
         });
@@ -49,7 +48,7 @@ export const api = {
 
     // PATIENTS
     getPatients: async () => {
-        const res = await fetch(`${API_URL}/patients`, {
+        const res = await fetch(`${API_BASE_URL}/patients`, {
             method: "GET",
             headers: getHeaders(),
         });
@@ -68,7 +67,7 @@ export const api = {
     },
 
     getPatient: async (id: string) => {
-        const res = await fetch(`${API_URL}/patients/${id}`, {
+        const res = await fetch(`${API_BASE_URL}/patients/${id}`, {
             method: "GET",
             headers: getHeaders(),
         });
@@ -86,7 +85,7 @@ export const api = {
     },
 
     getPatientSummary: async (id: string) => {
-        const res = await fetch(`${API_URL}/patients/${id}/summary`, {
+        const res = await fetch(`${API_BASE_URL}/patients/${id}/summary`, {
             method: "GET",
             headers: getHeaders(),
         });
@@ -104,7 +103,7 @@ export const api = {
             // email is not in Patient model in backend yet
         };
 
-        const res = await fetch(`${API_URL}/patients`, {
+        const res = await fetch(`${API_BASE_URL}/patients`, {
             method: "POST",
             headers: getHeaders(),
             body: JSON.stringify(payload),
@@ -121,7 +120,7 @@ export const api = {
         if (data.gender) payload.sex = data.gender === "male" ? "MALE" : "FEMALE";
         if (data.birthDate) payload.birthDate = new Date(data.birthDate).toISOString();
 
-        const res = await fetch(`${API_URL}/patients/${id}`, {
+        const res = await fetch(`${API_BASE_URL}/patients/${id}`, {
             method: "PATCH",
             headers: getHeaders(),
             body: JSON.stringify(payload),
@@ -130,7 +129,7 @@ export const api = {
     },
 
     deletePatient: async (id: string) => {
-        const res = await fetch(`${API_URL}/patients/${id}`, {
+        const res = await fetch(`${API_BASE_URL}/patients/${id}`, {
             method: "DELETE",
             headers: getHeaders(),
         });
