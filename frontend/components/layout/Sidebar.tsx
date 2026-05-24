@@ -1,7 +1,7 @@
 "use client"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { LayoutDashboard, Users, LogOut, Sprout } from "lucide-react"
+import { LayoutDashboard, Users, LogOut, Sprout, Apple } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useEffect, useState } from "react"
 import { getUserFromToken } from "@/lib/auth"
@@ -31,6 +31,7 @@ const Sidebar = () => {
     const navItems = [
         { href: "/dashboard", label: "Página inicial", icon: LayoutDashboard },
         { href: "/patients",  label: "Pacientes",      icon: Users },
+        { href: "/foods",     label: "Alimentos",      icon: Apple },
     ]
     if (role === "ADMIN") {
         navItems.push({ href: "/admin/nutritionists", label: "Nutricionistas", icon: Users })

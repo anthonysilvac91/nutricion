@@ -191,6 +191,55 @@ export const api = {
         return handleResponse(res);
     },
 
+    // FOODS
+    getFoodSources: async () => {
+        const res = await fetch(`${API_BASE_URL}/foods/sources`, { headers: getHeaders() });
+        return handleResponse(res);
+    },
+
+    getFoodCategories: async () => {
+        const res = await fetch(`${API_BASE_URL}/foods/categories`, { headers: getHeaders() });
+        return handleResponse(res);
+    },
+
+    searchFoods: async (params: {
+        q?: string;
+        sourceCode?: string;
+        category?: string;
+        page?: number;
+        limit?: number;
+    }) => {
+        const qs = new URLSearchParams();
+        if (params.q)          qs.set('q',          params.q);
+        if (params.sourceCode) qs.set('sourceCode', params.sourceCode);
+        if (params.category)   qs.set('category',   params.category);
+        if (params.page)       qs.set('page',        String(params.page));
+        if (params.limit)      qs.set('limit',       String(params.limit));
+        const res = await fetch(`${API_BASE_URL}/foods?${qs}`, { headers: getHeaders() });
+        return handleResponse(res);
+    },
+
+    createFood: async (data: {
+        name: string; nameEs?: string; category?: string;
+        energy?: number; protein?: number; carbs?: number;
+        fat?: number; fiber?: number; sugar?: number; sodium?: number;
+    }) => {
+        const res = await fetch(`${API_BASE_URL}/foods`, {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify(data),
+        });
+        return handleResponse(res);
+    },
+
+    deleteFood: async (id: string) => {
+        const res = await fetch(`${API_BASE_URL}/foods/${id}`, {
+            method: 'DELETE',
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
+
     // MEASUREMENTS (Placeholder - pending backend endpoint confirmation)
     createMeasurement: async (patientId: string, data: any) => {
         // Currently no direct endpoint in PatientsController for adding measurement?

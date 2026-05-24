@@ -10,6 +10,7 @@ import { PatientsModule } from './patients/patients.module';
 import { AdminModule } from './admin/admin.module';
 import { AssessmentsModule } from './assessments/assessments.module';
 import { PlansModule } from './plans/plans.module';
+import { FoodsModule } from './foods/foods.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { PlansModule } from './plans/plans.module';
     AdminModule,
     AssessmentsModule,
     PlansModule,
+    FoodsModule,
   ],
   controllers: [
     AppController,

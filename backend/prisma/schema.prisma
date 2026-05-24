@@ -45,7 +45,8 @@ model User {
   subscriptionStatus SubscriptionStatus @default(TRIALING)
   trialEndsAt        DateTime?
 
-  patients Patient[]
+  patients  Patient[]
+  foodItems FoodItem[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -128,6 +129,72 @@ model NutritionalPlan {
   updatedAt DateTime @updatedAt
 
   @@index([patientId])
+  @@index([userId])
+}
+
+// ----------------------------------------------------------------------
+// MÓDULO ALIMENTOS
+// ----------------------------------------------------------------------
+
+enum FoodSourceType {
+  API_LIVE       // Búsqueda en tiempo real vía API (ej. USDA, Open Food Facts)
+  API_CACHED     // Traído por API y almacenado localmente
+  SEEDED         // Cargado desde CSV/JSON en seed o migración
+  ADMIN_IMPORT   // Importado manualmente por admin de plataforma
+  NUTRITIONIST   // Alimento personalizado creado por la nutricionista
+}
+
+model FoodSource {
+  id          String         @id @default(uuid())
+  code        String         @unique   // "USDA", "MINSAL_CL", "CUSTOM", etc.
+  name        String                   // "USDA FoodData Central"
+  region      String?                  // "CL", "US", "ES", "AR", "MX"
+  type        FoodSourceType
+  description String?
+  url         String?                  // URL oficial de referencia
+  lastSyncAt  DateTime?
+  isActive    Boolean        @default(true)
+  foods       FoodItem[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+model FoodItem {
+  id         String     @id @default(uuid())
+  sourceId   String
+  source     FoodSource @relation(fields: [sourceId], references: [id])
+  externalId String?    // ID original en la fuente (ej: FDC ID de USDA)
+
+  name       String     // Nombre en idioma original
+  nameEs     String?    // Traducción al español
+  category   String?    // "Carnes", "Lácteos", "Cereales", etc.
+
+  // Valores por 100 g / 100 ml
+  energy     Float?     // kcal
+  protein    Float?     // g
+  carbs      Float?     // g
+  fat        Float?     // g
+  fiber      Float?     // g
+  sugar      Float?     // g
+  sodium     Float?     // mg
+
+  // Nutrientes extendidos (calcio, hierro, vitaminas, etc.)
+  nutrients  Json?
+
+  // null = alimento global de la fuente
+  // set  = alimento personalizado de una nutricionista
+  userId     String?
+  user       User?      @relation(fields: [userId], references: [id])
+
+  isActive   Boolean    @default(true)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@unique([sourceId, externalId])
+  @@index([name])
+  @@index([nameEs])
+  @@index([sourceId])
+  @@index([category])
   @@index([userId])
 }
 
