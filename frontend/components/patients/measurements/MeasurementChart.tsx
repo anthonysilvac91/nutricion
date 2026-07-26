@@ -2,10 +2,11 @@
 
 import { useMemo } from "react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
-import { MeasurementRecord } from "@/services/measurementsService";
+
+interface ChartPoint { date: string; value: number }
 
 interface Props {
-    records: MeasurementRecord[];
+    records: ChartPoint[];
     unit: string;
     heightClass?: string;
 }

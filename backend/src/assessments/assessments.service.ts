@@ -1,6 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateAssessmentDto } from './dto/create-assessment.dto';
+import { CreateAssessmentDto, MeasurementRecordDto } from './dto/create-assessment.dto';
+import { CreateDraftDto } from './dto/create-draft.dto';
+import { UpsertMeasurementsDto } from './dto/upsert-measurements.dto';
 import { ContextResolverService } from './context-resolver.service';
 import { ClinicalCalculationEngineService, EngineResult } from './clinical-calculation-engine.service';
 import { AssessmentStatus } from '@prisma/client';
@@ -13,26 +16,27 @@ export class AssessmentsService {
         private readonly engine: ClinicalCalculationEngineService,
     ) { }
 
-    async create(userId: string, patientId: string, dto: CreateAssessmentDto) {
-        // 0. Initial Validations
-        if (!dto.measurements || dto.measurements.length === 0) {
+    /** Shared payload validation for create() and upsertMeasurements() -- never duplicate these rules. */
+    private async validateMeasurementsPayload(measurements: MeasurementRecordDto[]): Promise<void> {
+        if (!measurements || measurements.length === 0) {
             throw new BadRequestException('At least one measurement is required');
         }
 
-        const definitionIds = dto.measurements.map(m => m.definitionId);
+        const definitionIds = measurements.map(m => m.definitionId);
 
-        // Check for empty IDs
         if (definitionIds.some(id => !id)) {
             throw new BadRequestException('Measurement definitionId cannot be empty');
         }
 
-        // Check for duplicates in the same payload
         const uniqueIds = new Set(definitionIds);
         if (uniqueIds.size !== definitionIds.length) {
             throw new BadRequestException('Duplicate measurement definitions in the same assessment are not allowed');
         }
 
-        // Verify definitions existence in DB
+        if (measurements.some(m => m.numericValue == null && !m.stringValue)) {
+            throw new BadRequestException('Each measurement requires a numericValue or stringValue');
+        }
+
         const existingDefinitions = await this.prisma.measurementDefinition.findMany({
             where: { id: { in: definitionIds } },
             select: { id: true }
@@ -43,6 +47,10 @@ export class AssessmentsService {
             const missingIds = definitionIds.filter(id => !existingIds.includes(id));
             throw new BadRequestException(`The following measurement definitions do not exist: ${missingIds.join(', ')}`);
         }
+    }
+
+    async create(userId: string, patientId: string, dto: CreateAssessmentDto) {
+        await this.validateMeasurementsPayload(dto.measurements);
 
         const patient = await this.prisma.patient.findFirst({
             where: { id: patientId, userId },
@@ -138,6 +146,27 @@ export class AssessmentsService {
         return this.mapToUiResponse(assessment);
     }
 
+    /** Validates patientId + userId + assessmentId together, per this repo's ownership pattern (PlansService.verifyPlanOwnership). */
+    async findOneForPatient(userId: string, patientId: string, assessmentId: string) {
+        const assessment = await this.prisma.assessment.findFirst({
+            where: { id: assessmentId, patientId, patient: { userId } },
+            include: { measurements: true, results: true },
+        });
+        if (!assessment) throw new NotFoundException('Assessment not found');
+        return this.mapToUiResponse(assessment);
+    }
+
+    private async verifyDraftOwnership(userId: string, patientId: string, assessmentId: string) {
+        const assessment = await this.prisma.assessment.findFirst({
+            where: { id: assessmentId, patientId, patient: { userId } },
+        });
+        if (!assessment) throw new NotFoundException('Assessment not found');
+        if (assessment.status !== 'DRAFT') {
+            throw new BadRequestException('Only a DRAFT assessment can be modified');
+        }
+        return assessment;
+    }
+
     async findAllByPatient(userId: string, patientId: string, status?: AssessmentStatus) {
         const patient = await this.prisma.patient.findFirst({
             where: { id: patientId, userId },
@@ -178,12 +207,139 @@ export class AssessmentsService {
         return this.mapToUiResponse(assessment);
     }
 
+    // POST /patients/:patientId/assessments/draft -- crea o recupera el DRAFT activo del paciente
+    async createOrGetDraft(userId: string, patientId: string, dto: CreateDraftDto) {
+        const patient = await this.prisma.patient.findFirst({ where: { id: patientId, userId } });
+        if (!patient) throw new NotFoundException('Patient not found');
+
+        const existing = await this.prisma.assessment.findFirst({ where: { patientId, status: 'DRAFT' } });
+        if (existing) return this.findOneForPatient(userId, patientId, existing.id);
+
+        try {
+            const created = await this.prisma.assessment.create({
+                data: {
+                    patientId,
+                    date: dto.date ? new Date(dto.date) : new Date(),
+                    status: 'DRAFT',
+                },
+            });
+            return this.findOneForPatient(userId, patientId, created.id);
+        } catch (e) {
+            if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+                // Otra request ya creó el DRAFT (carrera con el índice único parcial).
+                const winner = await this.prisma.assessment.findFirstOrThrow({ where: { patientId, status: 'DRAFT' } });
+                return this.findOneForPatient(userId, patientId, winner.id);
+            }
+            throw e;
+        }
+    }
+
+    // PATCH /patients/:patientId/assessments/:assessmentId/measurements
+    async upsertMeasurements(userId: string, patientId: string, assessmentId: string, dto: UpsertMeasurementsDto) {
+        await this.verifyDraftOwnership(userId, patientId, assessmentId);
+        await this.validateMeasurementsPayload(dto.measurements);
+
+        await this.prisma.$transaction(
+            dto.measurements.map(m => this.prisma.measurementRecord.upsert({
+                where: { assessmentId_definitionId: { assessmentId, definitionId: m.definitionId } },
+                create: {
+                    assessmentId,
+                    definitionId: m.definitionId,
+                    numericValue: m.numericValue,
+                    stringValue: m.stringValue,
+                    metadataAsJson: m.metadataAsJson,
+                    measuredBy: m.measuredBy,
+                    deviceUsed: m.deviceUsed,
+                },
+                update: {
+                    numericValue: m.numericValue,
+                    stringValue: m.stringValue,
+                    metadataAsJson: m.metadataAsJson,
+                    measuredBy: m.measuredBy,
+                    deviceUsed: m.deviceUsed,
+                },
+            }))
+        );
+
+        return this.findOneForPatient(userId, patientId, assessmentId);
+    }
+
+    // DELETE /patients/:patientId/assessments/:assessmentId/measurements/:definitionId
+    async removeMeasurement(userId: string, patientId: string, assessmentId: string, definitionId: string) {
+        await this.verifyDraftOwnership(userId, patientId, assessmentId);
+
+        const deleted = await this.prisma.measurementRecord.deleteMany({ where: { assessmentId, definitionId } });
+        if (deleted.count === 0) throw new NotFoundException('Measurement not found in this assessment');
+
+        return this.findOneForPatient(userId, patientId, assessmentId);
+    }
+
+    // POST /patients/:patientId/assessments/:assessmentId/complete
+    async complete(userId: string, patientId: string, assessmentId: string) {
+        const assessment = await this.prisma.assessment.findFirst({
+            where: { id: assessmentId, patientId, patient: { userId } },
+            include: { measurements: true },
+        });
+        if (!assessment) throw new NotFoundException('Assessment not found');
+        if (assessment.status !== 'DRAFT') throw new BadRequestException('Only a DRAFT assessment can be completed');
+        if (assessment.measurements.length === 0) {
+            throw new BadRequestException('At least one measurement is required to complete an assessment');
+        }
+
+        const patient = await this.prisma.patient.findFirstOrThrow({ where: { id: patientId } });
+        const context = this.contextResolver.resolveContext(patient, assessment.date);
+
+        const measurementDtos: MeasurementRecordDto[] = assessment.measurements.map(m => ({
+            definitionId: m.definitionId,
+            numericValue: m.numericValue ?? undefined,
+            stringValue: m.stringValue ?? undefined,
+        }));
+        const calculatedResults: EngineResult[] = this.engine.calculateAll(context, patient, measurementDtos);
+
+        await this.prisma.$transaction(async (tx) => {
+            await tx.calculatedResult.deleteMany({ where: { assessmentId } });
+
+            if (calculatedResults.length > 0) {
+                await tx.calculatedResult.createMany({
+                    data: calculatedResults.map(r => ({
+                        assessmentId,
+                        metricId: r.metricId,
+                        numericValue: r.numericValue,
+                        stringValue: r.stringValue,
+                        metadataAsJson: r.metadataAsJson as any,
+                        status: r.status,
+                        statusCode: r.statusCode,
+                        statusLabel: r.statusLabel,
+                        formulaUsed: r.formulaUsed,
+                        formulaVersion: r.formulaVersion,
+                        referenceTableId: r.referenceTableId,
+                        engineVersion: r.engineVersion,
+                    })),
+                });
+            }
+
+            await tx.assessment.update({
+                where: { id: assessmentId },
+                data: {
+                    status: 'COMPLETED',
+                    completedAt: new Date(),
+                    ageAtAssessmentMonths: context.ageAtAssessmentMonths,
+                    populationGroup: context.populationGroup,
+                    specialProfile: context.specialProfile,
+                    clinicalProtocol: context.clinicalProtocol,
+                },
+            });
+        });
+
+        return this.findOneForPatient(userId, patientId, assessmentId);
+    }
+
     private mapToUiResponse(assessment: any) {
         // We map results to inject colors dynamically
         const resultsUi = assessment.results.map((r: any) => {
             let uiTone = 'neutral';
 
-            // Mapeo básico UI 
+            // Mapeo básico UI
             if (r.statusCode === 'UNDERWEIGHT') uiTone = 'blue';
             else if (r.statusCode === 'NORMAL') uiTone = 'green';
             else if (r.statusCode === 'OVERWEIGHT') uiTone = 'orange';

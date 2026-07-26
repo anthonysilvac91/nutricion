@@ -273,6 +273,7 @@ model Assessment {
   patient   Patient          @relation(fields: [patientId], references: [id])
   date      DateTime
   status    AssessmentStatus @default(DRAFT)
+  completedAt DateTime?
 
   ageAtAssessmentMonths Int?
   populationGroup       String?

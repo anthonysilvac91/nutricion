@@ -11,12 +11,14 @@ interface Props {
     isOpen: boolean;
     onClose: () => void;
     visibleDefinitions: MeasurementDefinition[];
+    hasActiveDraft: boolean;
+    draftDate: string | null;
     onSaveAll: (records: { measurementId: string, value: number }[], date: string) => Promise<void>;
 }
 
-export function MeasurementQuickAddModal({ isOpen, onClose, visibleDefinitions, onSaveAll }: Props) {
+export function MeasurementQuickAddModal({ isOpen, onClose, visibleDefinitions, hasActiveDraft, draftDate, onSaveAll }: Props) {
     const today = new Date().toISOString().split('T')[0];
-    const [date, setDate] = useState(today);
+    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate.split('T')[0] : today);
 
     // Contiene los valores numéricos ingresados { "m_weight": "80.5", ... }
     const [values, setValues] = useState<Record<string, string>>({});
@@ -87,14 +89,20 @@ export function MeasurementQuickAddModal({ isOpen, onClose, visibleDefinitions, 
                 {/* Date Selection Box (Sticky/Fixed below header) */}
                 <div className="px-6 py-4 border-b border-gray-100 bg-white shrink-0 shadow-sm z-10">
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                        <label className="text-sm font-bold text-gray-900 min-w-fit">Fecha del registro:</label>
-                        <Input
-                            type="date"
-                            value={date}
-                            onChange={(e) => setDate(e.target.value)}
-                            required
-                            className="h-10 bg-gray-50 w-full sm:w-[200px] rounded-lg border-gray-200"
-                        />
+                        <label className="text-sm font-bold text-gray-900 min-w-fit">Fecha de la evaluación:</label>
+                        {hasActiveDraft ? (
+                            <div className="h-10 flex items-center px-3 rounded-lg bg-gray-50 border border-gray-200 text-sm text-gray-600 w-full sm:w-[200px]">
+                                {date} · Borrador en curso
+                            </div>
+                        ) : (
+                            <Input
+                                type="date"
+                                value={date}
+                                onChange={(e) => setDate(e.target.value)}
+                                required
+                                className="h-10 bg-gray-50 w-full sm:w-[200px] rounded-lg border-gray-200"
+                            />
+                        )}
                     </div>
                 </div>
 

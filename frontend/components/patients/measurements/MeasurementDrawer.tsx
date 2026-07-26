@@ -1,40 +1,78 @@
 "use client";
 
-import { useState } from "react";
-import { MeasurementDefinition, MeasurementRecord } from "@/services/measurementsService";
+import { useState, useEffect } from "react";
+import { MeasurementDefinition, MeasurementValueDto, HistoryDto } from "@/services/measurementsService";
 import { MeasurementChart } from "./MeasurementChart";
 import { getMeasurementIcon } from "./MeasurementIcons";
-import { cn } from "@/lib/utils";
-import { X, TrendingDown, TrendingUp, Minus, Trash2, Save } from "lucide-react";
+import { X, Trash2, Save, Loader2 } from "lucide-react";
 
 interface Props {
     definition: MeasurementDefinition;
-    records: MeasurementRecord[];
+    draft: MeasurementValueDto | null;
+    hasActiveDraft: boolean;
+    draftDate: string | null;
     onClose: () => void;
-    onAddRecord: (value: number, date: string) => Promise<void>;
-    onDeleteRecord: (id: string) => Promise<void>;
+    onSaveDraftValue: (value: number, date: string) => Promise<void>;
+    onDeleteDraftValue: () => Promise<void>;
+    loadHistory: (page: number) => Promise<HistoryDto>;
 }
 
-export function MeasurementDrawer({ definition, records, onClose, onAddRecord, onDeleteRecord }: Props) {
+export function MeasurementDrawer({ definition, draft, hasActiveDraft, draftDate, onClose, onSaveDraftValue, onDeleteDraftValue, loadHistory }: Props) {
     const today = new Date().toISOString().split("T")[0];
-    const [date, setDate] = useState(today);
-    const [value, setValue] = useState("");
-    const [loading, setLoading] = useState(false);
+    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate.split("T")[0] : today);
+    const [value, setValue] = useState(draft != null ? String(draft.value) : "");
+    const [saving, setSaving] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+
+    const [history, setHistory] = useState<HistoryDto | null>(null);
+    const [historyLoading, setHistoryLoading] = useState(true);
+    const [page, setPage] = useState(1);
 
     const Icon = getMeasurementIcon(definition.id);
-    const last5 = records.slice(0, 5);
+
+    useEffect(() => {
+        setHistoryLoading(true);
+        loadHistory(1).then(h => { setHistory(h); setPage(1); }).finally(() => setHistoryLoading(false));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [definition.id]);
+
+    const handleLoadMore = async () => {
+        const next = page + 1;
+        setHistoryLoading(true);
+        try {
+            const h = await loadHistory(next);
+            setHistory(prev => prev ? { ...h, data: [...prev.data, ...h.data] } : h);
+            setPage(next);
+        } finally {
+            setHistoryLoading(false);
+        }
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!value || isNaN(Number(value))) return;
-        setLoading(true);
+        setSaving(true);
         try {
-            await onAddRecord(Number(value), date);
-            setValue("");
+            await onSaveDraftValue(Number(value), date);
         } finally {
-            setLoading(false);
+            setSaving(false);
         }
     };
+
+    const handleDelete = async () => {
+        if (!confirm("¿Eliminar este valor del borrador?")) return;
+        setDeleting(true);
+        try {
+            await onDeleteDraftValue();
+            setValue("");
+        } finally {
+            setDeleting(false);
+        }
+    };
+
+    const chartPoints = (history?.data ?? [])
+        .filter(d => typeof d.value === "number")
+        .map(d => ({ date: d.date, value: d.value as number }));
 
     return (
         <>
@@ -56,15 +94,6 @@ export function MeasurementDrawer({ definition, records, onClose, onAddRecord, o
                         <h2 className="font-bold text-gray-900 text-base truncate">{definition.name}</h2>
                         <p className="text-xs text-[#1DBF73] font-semibold">{definition.unit}</p>
                     </div>
-                    {records.length > 0 && (
-                        <div className="text-right shrink-0 mr-2">
-                            <p className="text-xl font-black text-gray-900 leading-none">
-                                {records[0].value}
-                                <span className="text-xs font-semibold text-gray-400 ml-1">{definition.unit}</span>
-                            </p>
-                            <p className="text-[10px] text-gray-400 mt-0.5">último valor</p>
-                        </div>
-                    )}
                     <button
                         onClick={onClose}
                         className="p-2 rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-colors shrink-0"
@@ -76,20 +105,28 @@ export function MeasurementDrawer({ definition, records, onClose, onAddRecord, o
                 {/* Scrollable content */}
                 <div className="flex-1 overflow-y-auto">
 
-                    {/* Form section */}
+                    {/* Draft form section */}
                     <section className="px-6 pt-6 pb-5">
-                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4">Nuevo registro</p>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4">
+                            {hasActiveDraft ? "Valor en la evaluación en curso" : "Nueva evaluación"}
+                        </p>
                         <form onSubmit={handleSubmit} className="space-y-3">
                             <div className="flex gap-3">
                                 <div className="flex-1">
                                     <label className="text-xs font-semibold text-gray-600 mb-1.5 block">Fecha</label>
-                                    <input
-                                        type="date"
-                                        value={date}
-                                        onChange={(e) => setDate(e.target.value)}
-                                        required
-                                        className="w-full h-10 border border-gray-200 rounded-xl px-3 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#1DBF73]/25 focus:border-[#1DBF73] transition-colors"
-                                    />
+                                    {hasActiveDraft ? (
+                                        <div className="w-full h-10 border border-gray-100 bg-gray-50 rounded-xl px-3 flex items-center text-sm text-gray-500">
+                                            {date}
+                                        </div>
+                                    ) : (
+                                        <input
+                                            type="date"
+                                            value={date}
+                                            onChange={(e) => setDate(e.target.value)}
+                                            required
+                                            className="w-full h-10 border border-gray-200 rounded-xl px-3 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#1DBF73]/25 focus:border-[#1DBF73] transition-colors"
+                                        />
+                                    )}
                                 </div>
                                 <div className="flex-1">
                                     <label className="text-xs font-semibold text-gray-600 mb-1.5 block">
@@ -111,14 +148,27 @@ export function MeasurementDrawer({ definition, records, onClose, onAddRecord, o
                                     </div>
                                 </div>
                             </div>
-                            <button
-                                type="submit"
-                                disabled={loading}
-                                className="w-full h-10 bg-[#1DBF73] hover:bg-[#15965A] text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-colors disabled:opacity-60 shadow-sm shadow-[#1DBF73]/20"
-                            >
-                                <Save className="w-4 h-4" />
-                                {loading ? "Guardando..." : "Guardar registro"}
-                            </button>
+                            <div className="flex gap-2">
+                                <button
+                                    type="submit"
+                                    disabled={saving}
+                                    className="flex-1 h-10 bg-[#1DBF73] hover:bg-[#15965A] text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-colors disabled:opacity-60 shadow-sm shadow-[#1DBF73]/20"
+                                >
+                                    <Save className="w-4 h-4" />
+                                    {saving ? "Guardando..." : "Guardar en el borrador"}
+                                </button>
+                                {draft != null && (
+                                    <button
+                                        type="button"
+                                        onClick={handleDelete}
+                                        disabled={deleting}
+                                        className="h-10 px-3 border border-gray-200 rounded-xl text-gray-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors disabled:opacity-60"
+                                        title="Eliminar del borrador"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
+                                )}
+                            </div>
                         </form>
                     </section>
 
@@ -126,69 +176,44 @@ export function MeasurementDrawer({ definition, records, onClose, onAddRecord, o
 
                     {/* Chart section */}
                     <section className="px-6 py-5">
-                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Progreso</p>
-                        <MeasurementChart records={records} unit={definition.unit} heightClass="h-[190px]" />
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Progreso (evaluaciones completadas)</p>
+                        <MeasurementChart records={chartPoints} unit={definition.unit} heightClass="h-[190px]" />
                     </section>
 
                     <div className="h-px bg-gray-100 mx-6" />
 
-                    {/* History section */}
+                    {/* History section -- read-only, evaluaciones COMPLETED únicamente */}
                     <section className="px-6 py-5 pb-10">
-                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4">Últimas medidas</p>
-                        {last5.length === 0 ? (
-                            <p className="text-sm text-gray-400 text-center py-8">Aún no hay registros.</p>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4">Historial completado</p>
+                        {historyLoading && !history ? (
+                            <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-gray-300" /></div>
+                        ) : !history || history.data.length === 0 ? (
+                            <p className="text-sm text-gray-400 text-center py-8">Aún no hay evaluaciones completadas con este dato.</p>
                         ) : (
                             <div className="space-y-2">
-                                {last5.map((record, index) => {
-                                    const prevRecord = records[index + 1];
-                                    let diff = 0, isUp = false, isDown = false;
-                                    if (prevRecord) {
-                                        diff = parseFloat((record.value - prevRecord.value).toFixed(2));
-                                        isUp = diff > 0;
-                                        isDown = diff < 0;
-                                    }
-                                    return (
-                                        <div
-                                            key={record.id}
-                                            className="flex items-center justify-between py-2.5 px-3.5 rounded-xl bg-gray-50 hover:bg-white hover:shadow-[0_1px_6px_rgba(0,0,0,0.06)] border border-transparent hover:border-gray-100 transition-all group"
-                                        >
-                                            <span className="text-sm text-gray-500">
-                                                {new Date(record.date).toLocaleDateString("es-ES", {
-                                                    day: "2-digit",
-                                                    month: "short",
-                                                    year: "numeric",
-                                                })}
-                                            </span>
-                                            <div className="flex items-center gap-3">
-                                                <div className="text-right">
-                                                    <span className="text-sm font-bold text-gray-900">{record.value}</span>
-                                                    <span className="text-xs text-gray-400 ml-1">{definition.unit}</span>
-                                                    {prevRecord && (
-                                                        <div className={cn(
-                                                            "text-[11px] font-semibold flex items-center justify-end gap-0.5 mt-0.5",
-                                                            isUp ? "text-red-500" : isDown ? "text-green-600" : "text-gray-400"
-                                                        )}>
-                                                            {isUp
-                                                                ? <TrendingUp className="w-3 h-3" />
-                                                                : isDown
-                                                                    ? <TrendingDown className="w-3 h-3" />
-                                                                    : <Minus className="w-3 h-3" />}
-                                                            {diff > 0 ? "+" : ""}{diff}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <button
-                                                    onClick={() => {
-                                                        if (confirm("¿Eliminar este registro?")) onDeleteRecord(record.id);
-                                                    }}
-                                                    className="p-1 opacity-0 group-hover:opacity-100 transition-opacity text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg"
-                                                >
-                                                    <Trash2 className="w-3.5 h-3.5" />
-                                                </button>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
+                                {history.data.map((entry) => (
+                                    <div
+                                        key={entry.recordId}
+                                        className="flex items-center justify-between py-2.5 px-3.5 rounded-xl bg-gray-50 border border-transparent"
+                                    >
+                                        <span className="text-sm text-gray-500">
+                                            {new Date(entry.date).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" })}
+                                        </span>
+                                        <span className="text-sm font-bold text-gray-900">
+                                            {entry.value} <span className="text-xs text-gray-400 font-normal">{definition.unit}</span>
+                                        </span>
+                                    </div>
+                                ))}
+                                {history.meta.page < history.meta.totalPages && (
+                                    <button
+                                        type="button"
+                                        onClick={handleLoadMore}
+                                        disabled={historyLoading}
+                                        className="w-full mt-2 text-xs font-semibold text-[#1DBF73] hover:text-[#15965A] py-2"
+                                    >
+                                        {historyLoading ? "Cargando..." : "Cargar más"}
+                                    </button>
+                                )}
                             </div>
                         )}
                     </section>

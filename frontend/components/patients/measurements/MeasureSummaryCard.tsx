@@ -1,26 +1,40 @@
 "use client";
 
-import { MeasurementDefinition, MeasurementRecord } from "@/services/measurementsService";
+import { MeasurementDefinition, MeasurementValueDto, MeasurementChangeDto } from "@/services/measurementsService";
 import { TrendingDown, TrendingUp, Minus, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getMeasurementIcon } from "./MeasurementIcons";
 
 interface Props {
     definition: MeasurementDefinition;
-    latestRecord?: MeasurementRecord;
-    previousRecord?: MeasurementRecord;
+    draft: MeasurementValueDto | null;
+    latestCompleted: MeasurementValueDto | null;
+    previousCompleted: MeasurementValueDto | null;
+    change: MeasurementChangeDto | null;
+    hasActiveDraft: boolean;
     isActive: boolean;
     onClick: () => void;
 }
 
-export function MeasureSummaryCard({ definition, latestRecord, previousRecord, isActive, onClick }: Props) {
-    let diff = 0, isUp = false, isDown = false;
-    if (latestRecord && previousRecord) {
-        diff  = parseFloat((latestRecord.value - previousRecord.value).toFixed(2));
-        isUp   = diff > 0;
-        isDown = diff < 0;
-    }
+function formatDate(iso: string) {
+    return new Date(iso).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
+}
 
+function ChangeBadge({ change }: { change: MeasurementChangeDto }) {
+    const isUp = change.trend === "UP";
+    const isDown = change.trend === "DOWN";
+    return (
+        <div className={cn(
+            "inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded-md mt-1",
+            isUp ? "bg-red-50 text-red-500" : isDown ? "bg-green-50 text-green-600" : "bg-gray-50 text-gray-400"
+        )}>
+            {isUp ? <TrendingUp className="w-2.5 h-2.5 mr-0.5" /> : isDown ? <TrendingDown className="w-2.5 h-2.5 mr-0.5" /> : <Minus className="w-2.5 h-2.5 mr-0.5" />}
+            {change.difference > 0 ? "+" : ""}{change.difference}
+        </div>
+    );
+}
+
+export function MeasureSummaryCard({ definition, draft, latestCompleted, change, hasActiveDraft, isActive, onClick }: Props) {
     const Icon = getMeasurementIcon(definition.id);
 
     return (
@@ -49,30 +63,47 @@ export function MeasureSummaryCard({ definition, latestRecord, previousRecord, i
                 </div>
             </div>
 
-            {/* Bottom: value or "Sin datos" + trend + "+" */}
+            {/* Bottom: value(s) + "+" */}
             <div className="flex items-end justify-between">
                 <div>
-                    {latestRecord ? (
-                        <div className="flex items-baseline gap-0.5">
-                            <span className="text-lg font-black tracking-tight text-gray-900 leading-none">{latestRecord.value}</span>
-                            <span className="text-[10px] font-semibold text-gray-400 ml-0.5">{definition.unit}</span>
-                        </div>
-                    ) : (
-                        <span className="text-xs text-gray-400">Sin datos</span>
+                    {hasActiveDraft && draft && (
+                        <>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                                <div className="flex items-baseline gap-0.5">
+                                    <span className="text-lg font-black tracking-tight text-gray-900 leading-none">{draft.value}</span>
+                                    <span className="text-[10px] font-semibold text-gray-400 ml-0.5">{definition.unit}</span>
+                                </div>
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">BORRADOR</span>
+                            </div>
+                            <p className="text-[10px] text-gray-400 mt-0.5">{formatDate(draft.date)}</p>
+                            {latestCompleted && (
+                                <p className="text-[10px] text-gray-400 mt-1">Último completado: {latestCompleted.value} {definition.unit} · {formatDate(latestCompleted.date)}</p>
+                            )}
+                        </>
                     )}
 
-                    {latestRecord && previousRecord && (
-                        <div className={cn(
-                            "inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded-md mt-1",
-                            isUp   ? "bg-red-50 text-red-500"     :
-                            isDown ? "bg-green-50 text-green-600" :
-                                     "bg-gray-50 text-gray-400"
-                        )}>
-                            {isUp   ? <TrendingUp   className="w-2.5 h-2.5 mr-0.5" /> :
-                             isDown ? <TrendingDown className="w-2.5 h-2.5 mr-0.5" /> :
-                                      <Minus        className="w-2.5 h-2.5 mr-0.5" />}
-                            {diff > 0 ? "+" : ""}{diff}
-                        </div>
+                    {hasActiveDraft && !draft && (
+                        <>
+                            <span className="text-xs text-gray-400">Sin registrar en esta evaluación</span>
+                            {latestCompleted && (
+                                <p className="text-[10px] text-gray-400 mt-1">Último completado: {latestCompleted.value} {definition.unit} · {formatDate(latestCompleted.date)}</p>
+                            )}
+                        </>
+                    )}
+
+                    {!hasActiveDraft && latestCompleted && (
+                        <>
+                            <div className="flex items-baseline gap-0.5">
+                                <span className="text-lg font-black tracking-tight text-gray-900 leading-none">{latestCompleted.value}</span>
+                                <span className="text-[10px] font-semibold text-gray-400 ml-0.5">{definition.unit}</span>
+                            </div>
+                            <p className="text-[10px] text-gray-400 mt-0.5">{formatDate(latestCompleted.date)}</p>
+                            {change && <ChangeBadge change={change} />}
+                        </>
+                    )}
+
+                    {!hasActiveDraft && !latestCompleted && (
+                        <span className="text-xs text-gray-400">Sin datos</span>
                     )}
                 </div>
 
