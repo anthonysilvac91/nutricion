@@ -113,6 +113,7 @@ async function main() {
       { id: 'BMI', category: MetricCategory.INDEX, name: 'Índice de Masa Corporal (IMC)' },
       { id: 'BODY_FAT_PERCENTAGE', category: MetricCategory.COMPOSITION, name: 'Porcentaje de Grasa Corporal' },
       { id: 'WAIST_TO_HIP_RATIO', category: MetricCategory.INDEX, name: 'Índice Cintura-Cadera' },
+      { id: 'BMR', category: MetricCategory.ENERGY_REQUIREMENT, name: 'Metabolismo Basal (BMR)' },
       { id: 'TDEE', category: MetricCategory.ENERGY_REQUIREMENT, name: 'Gasto Energético Total (GET)' },
     ]
   });

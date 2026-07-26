@@ -58,8 +58,9 @@ export class AssessmentsService {
         const context = this.contextResolver.resolveContext(patient, assessmentDate);
 
         // 2. Perform calculations dynamically early before persist
-        const calculatedResults: EngineResult[] = await this.engine.calculateAll(
+        const calculatedResults: EngineResult[] = this.engine.calculateAll(
             context,
+            patient,
             dto.measurements
         );
 
@@ -101,7 +102,7 @@ export class AssessmentsService {
                         metricId: r.metricId,
                         numericValue: r.numericValue,
                         stringValue: r.stringValue,
-                        metadataAsJson: r.metadataAsJson,
+                        metadataAsJson: r.metadataAsJson as any,
                         status: r.status,
                         statusCode: r.statusCode,
                         statusLabel: r.statusLabel,
@@ -135,6 +136,20 @@ export class AssessmentsService {
 
         // Mapeo en vivo de UI en backend (Dumb Frontend paradigm)
         return this.mapToUiResponse(assessment);
+    }
+
+    async findAllByPatient(userId: string, patientId: string, status?: AssessmentStatus) {
+        const patient = await this.prisma.patient.findFirst({
+            where: { id: patientId, userId },
+            select: { id: true },
+        });
+        if (!patient) throw new NotFoundException('Patient not found');
+
+        return this.prisma.assessment.findMany({
+            where: { patientId, ...(status ? { status } : {}) },
+            orderBy: { date: 'desc' },
+            select: { id: true, date: true, status: true, populationGroup: true },
+        });
     }
 
     async findLatestByPatient(userId: string, patientId: string) {

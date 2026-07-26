@@ -179,14 +179,24 @@ describe('Assessments (e2e)', () => {
         // The previous code did `const bmiResult = latestAssessment.results.find(...)` which is the latest one.
     });
 
-    it('GET /patients/:id/planning-context - returns planning context', async () => {
-        const res = await request(app.getHttpServer())
+    it('GET /patients/:id/planning-context - requires an assessmentId query param', async () => {
+        await request(app.getHttpServer())
             .get(`/patients/${patientId}/planning-context`)
+            .set('Authorization', `Bearer ${token}`)
+            .expect(400);
+    });
+
+    it('GET /patients/:id/planning-context - returns planning context for a COMPLETED assessment', async () => {
+        const res = await request(app.getHttpServer())
+            .get(`/patients/${patientId}/planning-context?assessmentId=${assessmentId}`)
             .set('Authorization', `Bearer ${token}`)
             .expect(200);
 
-        expect(res.body.patientId).toBe(patientId);
-        expect(res.body.resolvedProfile.ageGroup).toBe('ADULT');
-        expect(res.body.availableData).toBeDefined();
+        expect(res.body.assessmentId).toBe(assessmentId);
+        expect(res.body.populationGroup).toBe('ADULT');
+        expect(res.body.weightKg).toBe(80);
+        expect(res.body.availableFormulas.bmr.length).toBeGreaterThan(0);
+        expect(res.body.availableFormulas.fiberSources.length).toBeGreaterThan(0);
+        expect(res.body.availableFormulas.waterSources.length).toBeGreaterThan(0);
     });
 });

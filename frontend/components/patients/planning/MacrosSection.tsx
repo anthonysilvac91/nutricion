@@ -2,26 +2,19 @@
 
 import { useState, useEffect } from "react";
 import { Droplets, Wheat, Dumbbell } from "lucide-react";
-
-const MOCK_GET    = 1509;
-const MOCK_WEIGHT = 72.5;
-
-const LIPID_FORMULAS = [
-    { value: "minsal_2015", label: "MINSAL 2015", pct: 28 },
-    { value: "fao_2004",    label: "FAO 2004",    pct: 25 },
-    { value: "custom",      label: "Porcentaje",  pct: null },
-] as const;
+import { StatusBadge, formatResultValue, StrategyResult } from "./ResultBadge";
 
 export interface MacrosData {
-    lipidFormula:   "minsal_2015" | "fao_2004" | "custom";
-    lipidCustomPct: number;
-    proteinPct:     number;
+    proteinPct: number;
+    lipidPct: number;
+    carbPct: number;
 }
 
 interface Props {
+    results?: Record<string, StrategyResult>;
     defaultData?: Partial<MacrosData>;
-    onChange?:    (data: MacrosData) => void;
-    readOnly?:    boolean;
+    onChange?: (data: MacrosData) => void;
+    readOnly?: boolean;
 }
 
 interface SliderProps { value: number; onChange: (v: number) => void; disabled?: boolean; color: string; max: number }
@@ -35,36 +28,21 @@ function MacroSlider({ value, onChange, disabled = false, color, max }: SliderPr
     );
 }
 
-export function MacrosSection({ defaultData, onChange, readOnly = false }: Props) {
-    const [lipidFormula,   setLipidFormula]   = useState<"minsal_2015" | "fao_2004" | "custom">(defaultData?.lipidFormula   ?? "minsal_2015");
-    const [lipidCustomPct, setLipidCustomPct] = useState(defaultData?.lipidCustomPct ?? 28);
-    const [proteinPct,     setProteinPct]     = useState(defaultData?.proteinPct     ?? 15);
-
-    const formulaEntry = LIPID_FORMULAS.find(f => f.value === lipidFormula)!;
-    const lipidPct     = formulaEntry.pct !== null ? formulaEntry.pct : lipidCustomPct;
-    const carbPct      = Math.max(0, 100 - lipidPct - proteinPct);
-
-    const handleLipidFormula = (v: "minsal_2015" | "fao_2004" | "custom") => {
-        const entry = LIPID_FORMULAS.find(f => f.value === v)!;
-        setLipidFormula(v);
-        if (entry.pct !== null) setLipidCustomPct(entry.pct);
-    };
+export function MacrosSection({ results, defaultData, onChange, readOnly = false }: Props) {
+    const [lipidPct, setLipidPct] = useState(defaultData?.lipidPct ?? 28);
+    const [proteinPct, setProteinPct] = useState(defaultData?.proteinPct ?? 15);
+    const carbPct = Math.max(0, 100 - lipidPct - proteinPct);
 
     useEffect(() => {
-        onChange?.({ lipidFormula, lipidCustomPct, proteinPct });
-    }, [lipidFormula, lipidCustomPct, proteinPct]);
+        onChange?.({ lipidPct, proteinPct, carbPct });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [lipidPct, proteinPct, carbPct]);
 
     const rows = [
-        { key: "lipid",   pct: lipidPct,   kcalPerG: 9, color: "#EAB308", ref: "20 – 35 %", icon: <Droplets className="w-3.5 h-3.5" />, iconBg: "bg-yellow-50 text-yellow-500", disabled: lipidFormula !== "custom" || readOnly, onSlide: (v: number) => setLipidCustomPct(Math.min(v, 95 - proteinPct)) },
-        { key: "carb",    pct: carbPct,    kcalPerG: 4, color: "#F97316", ref: "45 – 60 %", icon: <Wheat     className="w-3.5 h-3.5" />, iconBg: "bg-orange-50 text-orange-400", disabled: readOnly,                            onSlide: (v: number) => { const c = Math.min(v, 95 - lipidPct); setProteinPct(Math.max(5, 100 - lipidPct - c)); } },
-        { key: "protein", pct: proteinPct, kcalPerG: 4, color: "#3B82F6", ref: "10 – 20 %", icon: <Dumbbell  className="w-3.5 h-3.5" />, iconBg: "bg-blue-50 text-blue-400",    disabled: readOnly,                            onSlide: (v: number) => setProteinPct(Math.min(v, 95 - lipidPct)) },
-    ].map(r => ({
-        ...r,
-        grams:  Math.round(MOCK_GET * r.pct / 100 / r.kcalPerG),
-        gPerKg: (MOCK_GET * r.pct / 100 / r.kcalPerG / MOCK_WEIGHT).toFixed(2),
-    }));
-
-    const selectCls = "h-8 border border-gray-200 rounded-lg px-3 pr-8 text-xs font-medium text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-[#1DBF73]/25 focus:border-[#1DBF73] transition-colors cursor-pointer disabled:bg-gray-50 disabled:cursor-default";
+        { key: "lipid", pct: lipidPct, color: "#EAB308", icon: <Droplets className="w-3.5 h-3.5" />, iconBg: "bg-yellow-50 text-yellow-500", result: results?.FAT_G, onSlide: (v: number) => setLipidPct(Math.min(v, 95 - proteinPct)) },
+        { key: "carb", pct: carbPct, color: "#F97316", icon: <Wheat className="w-3.5 h-3.5" />, iconBg: "bg-orange-50 text-orange-400", result: results?.CARBS_G, disabled: true, onSlide: () => {} },
+        { key: "protein", pct: proteinPct, color: "#3B82F6", icon: <Dumbbell className="w-3.5 h-3.5" />, iconBg: "bg-blue-50 text-blue-400", result: results?.PROTEIN_G, onSlide: (v: number) => setProteinPct(Math.min(v, 95 - lipidPct)) },
+    ];
 
     return (
         <div className="h-full bg-white rounded-2xl border border-gray-200/70 shadow-[0_1px_4px_rgba(0,0,0,0.05),0_2px_10px_rgba(0,0,0,0.04)] overflow-hidden flex flex-col">
@@ -76,7 +54,7 @@ export function MacrosSection({ defaultData, onChange, readOnly = false }: Props
                 <table className="w-full h-full">
                     <thead>
                         <tr className="bg-purple-50/50 border-b border-gray-100">
-                            {["Indicador", "Fórmula", "Porcentaje", "Cantidad total", "Cantidad en g/kg de peso", "Valor de referencia"].map(h => (
+                            {["Indicador", "Fórmula", "Porcentaje", "Cantidad total", "Cantidad en g/kg de peso", "Estado"].map(h => (
                                 <th key={h} className="px-4 py-2.5 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider first:pl-6 last:pr-6">{h}</th>
                             ))}
                         </tr>
@@ -90,22 +68,16 @@ export function MacrosSection({ defaultData, onChange, readOnly = false }: Props
                                         <span className="text-xs font-semibold text-gray-800">{["Lípidos", "Hidratos de carbono", "Proteínas"][i]}</span>
                                     </div>
                                 </td>
-                                <td className="px-4 py-4">
-                                    {i === 0 ? (
-                                        <select value={lipidFormula} disabled={readOnly} onChange={e => handleLipidFormula(e.target.value as typeof lipidFormula)} className={selectCls}>
-                                            {LIPID_FORMULAS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-                                        </select>
-                                    ) : <span className="text-xs text-gray-400">—</span>}
-                                </td>
+                                <td className="px-4 py-4"><span className="text-xs text-gray-400">Porcentaje del GET</span></td>
                                 <td className="px-4 py-4">
                                     <div className="flex items-center gap-3">
                                         <span className={`text-xs font-bold w-8 text-right ${row.disabled ? "text-gray-400" : "text-gray-700"}`}>{row.pct} %</span>
-                                        <MacroSlider value={row.pct} onChange={row.onSlide} disabled={row.disabled} color={row.color} max={100} />
+                                        <MacroSlider value={row.pct} onChange={row.onSlide} disabled={readOnly || row.disabled} color={row.color} max={100} />
                                     </div>
                                 </td>
-                                <td className="px-4 py-4"><span className="text-xs font-semibold text-gray-800">{row.grams} g</span></td>
-                                <td className="px-4 py-4"><span className="text-xs font-semibold text-gray-800">{row.gPerKg} g/kg</span></td>
-                                <td className="pl-4 pr-6 py-4"><span className="text-xs font-semibold text-gray-800">{row.ref}</span></td>
+                                <td className="px-4 py-4"><span className="text-xs font-semibold text-gray-800">{formatResultValue(row.result, "g")}</span></td>
+                                <td className="px-4 py-4"><span className="text-xs font-semibold text-gray-800">{row.result?.metadataAsJson?.gPerKg != null ? `${row.result.metadataAsJson.gPerKg} g/kg` : "—"}</span></td>
+                                <td className="pl-4 pr-6 py-4"><StatusBadge result={row.result} /></td>
                             </tr>
                         ))}
                     </tbody>

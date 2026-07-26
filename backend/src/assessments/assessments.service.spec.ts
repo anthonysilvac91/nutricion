@@ -69,7 +69,7 @@ describe('AssessmentsService', () => {
       specialProfile: 'STANDARD',
       clinicalProtocol: 'STANDARD',
     });
-    engine.calculateAll.mockResolvedValue([]);
+    engine.calculateAll.mockReturnValue([]);
     prisma.assessment.findFirst.mockResolvedValue({
       id: 'assessment-1',
       measurements: [],

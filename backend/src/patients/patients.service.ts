@@ -1,12 +1,17 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePatientDto } from './dto/create-patient.dto';
 import { UpdatePatientDto } from './dto/update-patient.dto';
 import { FindAllPatientsDto } from './dto/find-all-patients.dto';
+import { CalculationStrategyRegistry } from '../calculation-engine/calculation-strategy-registry.service';
+import { PAL_OPTIONS, MACRO_METHOD_OPTIONS } from '../calculation-engine/defaults';
 
 @Injectable()
 export class PatientsService {
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly calculationStrategies: CalculationStrategyRegistry,
+  ) { }
 
   create(userId: string, dto: CreatePatientDto) {
     return this.prisma.patient.create({
@@ -151,55 +156,71 @@ export class PatientsService {
     return summary;
   }
 
-  async getPlanningContext(userId: string, id: string) {
+  async getPlanningContext(userId: string, id: string, assessmentId?: string) {
     const patient = await this.findOne(userId, id);
 
-    const latestAssessment = await this.prisma.assessment.findFirst({
-      where: { patientId: id, status: 'COMPLETED' },
-      orderBy: { date: 'desc' },
-      include: {
-        results: true,
-      }
-    });
-
-    // Mapeo inicial (con mocks parciales listos para Fase 3 avanzada)
-    const context = {
-      patientId: patient.id,
-      latestAssessmentId: latestAssessment?.id || null,
-      resolvedProfile: {
-        ageGroup: latestAssessment?.populationGroup || 'ADULT',
-        activityProfile: patient.activityLevel,
-        targetAudience: 'GENERAL'
-      },
-      availableData: {
-        tdeeKcal: null as number | null,
-        proteinNeedsGrams: null as number | null
-      },
-      clinicalAlerts: [] as any[],
-      missingRequirements: [] as string[]
-    };
-
-    if (latestAssessment) {
-      // Intentar popular availableData de cálculos reales
-      const bmiResult = latestAssessment.results.find(r => r.metricId === 'BMI');
-      if (bmiResult && (bmiResult.statusCode === 'UNDERWEIGHT' || bmiResult.statusCode === 'OVERWEIGHT')) {
-        context.clinicalAlerts.push({
-          metric: 'BMI',
-          alertType: 'WARNING',
-          message: `Paciente presenta un estado de: ${bmiResult.statusLabel || bmiResult.statusCode}`
-        });
-      }
-
-      const tdeeResult = latestAssessment.results.find(r => r.metricId === 'TDEE');
-      if (tdeeResult && tdeeResult.numericValue) {
-        context.availableData.tdeeKcal = tdeeResult.numericValue;
-      } else {
-        context.missingRequirements.push('ENERGY_REQUIREMENT_MISSING');
-      }
-    } else {
-      context.missingRequirements.push('NO_COMPLETED_ASSESSMENT');
+    if (!assessmentId) {
+      throw new BadRequestException('assessmentId query param is required');
     }
 
-    return context;
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, patientId: id },
+      include: { measurements: true, results: true },
+    });
+
+    if (!assessment) throw new NotFoundException('Assessment not found');
+    if (assessment.status !== 'COMPLETED') {
+      throw new BadRequestException('Assessment must be COMPLETED to be used for planning');
+    }
+
+    const population = (assessment.populationGroup ?? 'ADULT') as 'ADULT' | 'PEDIATRIC' | 'GERIATRIC';
+    const weightRec = assessment.measurements.find(m => m.definitionId === 'm_weight');
+    const heightRec = assessment.measurements.find(m => m.definitionId === 'm_height');
+    const fatRec = assessment.measurements.find(m => m.definitionId === 'm_fat_percent');
+    const ageYears = assessment.ageAtAssessmentMonths != null ? Math.floor(assessment.ageAtAssessmentMonths / 12) : null;
+
+    const calculatedResults: Record<string, unknown> = {};
+    const missingRequirements: string[] = [];
+    const clinicalAlerts: { metric: string; alertType: string; message: string }[] = [];
+
+    for (const metricId of ['BMI', 'BODY_FAT_PERCENTAGE', 'BMR', 'TDEE']) {
+      const result = assessment.results.find(r => r.metricId === metricId);
+      calculatedResults[metricId] = result ?? null;
+      if (!result || result.status !== 'CALCULATED') {
+        missingRequirements.push(`${metricId}_${result?.status ?? 'MISSING_DATA'}`);
+      }
+    }
+
+    const bmiResult = assessment.results.find(r => r.metricId === 'BMI');
+    if (bmiResult && ['UNDERWEIGHT', 'OVERWEIGHT', 'OBESE'].includes(bmiResult.statusCode ?? '')) {
+      clinicalAlerts.push({
+        metric: 'BMI',
+        alertType: 'WARNING',
+        message: `Paciente presenta un estado de: ${bmiResult.statusLabel || bmiResult.statusCode}`,
+      });
+    }
+
+    return {
+      assessmentId: assessment.id,
+      date: assessment.date,
+      ageYears,
+      sex: patient.sex,
+      activityLevel: patient.activityLevel,
+      populationGroup: population,
+      weightKg: weightRec?.numericValue ?? null,
+      heightCm: heightRec?.numericValue ?? null,
+      fatPercentMeasured: fatRec?.numericValue ?? null,
+      calculatedResults,
+      missingRequirements,
+      clinicalAlerts,
+      availableFormulas: {
+        bmi: this.calculationStrategies.listCatalog('BMI', 'ASSESSMENT', population),
+        bmr: this.calculationStrategies.listCatalog('BMR', 'PLAN', population),
+        macroMethods: MACRO_METHOD_OPTIONS,
+        fiberSources: this.calculationStrategies.listCatalog('FIBER_G', 'PLAN', population),
+        waterSources: this.calculationStrategies.listCatalog('WATER_ML', 'PLAN', population),
+        palOptions: PAL_OPTIONS,
+      },
+    };
   }
 }

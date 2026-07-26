@@ -53,11 +53,11 @@ export class PatientsController {
     return this.patients.getSummary(req.user.sub, id);
   }
 
-  // GET /patients/:id/planning-context
+  // GET /patients/:id/planning-context?assessmentId=:assessmentId
   @ApiOperation({ summary: 'Obtener el contexto clínico digerido para Planificación' })
   @Get(':id/planning-context')
-  getPlanningContext(@Req() req: any, @Param('id') id: string) {
-    return this.patients.getPlanningContext(req.user.sub, id);
+  getPlanningContext(@Req() req: any, @Param('id') id: string, @Query('assessmentId') assessmentId?: string) {
+    return this.patients.getPlanningContext(req.user.sub, id, assessmentId);
   }
 
   // GET /patients/:id

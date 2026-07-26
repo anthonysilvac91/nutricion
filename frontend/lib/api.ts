@@ -136,6 +136,23 @@ export const api = {
         return handleResponse(res);
     },
 
+    // ASSESSMENTS (para el flujo de Planificación)
+    getCompletedAssessments: async (patientId: string) => {
+        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/assessments?status=COMPLETED`, {
+            method: "GET",
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
+
+    getPlanningContext: async (patientId: string, assessmentId: string) => {
+        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/planning-context?assessmentId=${assessmentId}`, {
+            method: "GET",
+            headers: getHeaders(),
+        });
+        return handleResponse(res);
+    },
+
     // PLANS
     getPlans: async (patientId: string) => {
         const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans`, {
@@ -145,10 +162,11 @@ export const api = {
         return handleResponse(res);
     },
 
-    createOrGetDraft: async (patientId: string) => {
+    createOrGetDraft: async (patientId: string, assessmentId: string) => {
         const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans`, {
             method: "POST",
             headers: getHeaders(),
+            body: JSON.stringify({ assessmentId }),
         });
         return handleResponse(res);
     },
@@ -161,14 +179,19 @@ export const api = {
         return handleResponse(res);
     },
 
-    savePlan: async (patientId: string, planId: string, data: {
-        patientValues?: Record<string, any>;
-        energyCalc?: Record<string, any>;
-        macros?: Record<string, any>;
-        micros?: Record<string, any>;
+    recalculatePlan: async (patientId: string, planId: string, data: {
+        bmrFormulaId: string;
+        pal: number;
+        targetWeightKg?: number;
+        targetKcalOverride?: number;
+        macroMethod: "PERCENT" | "GRAMS_PER_KG";
+        macroPercents?: { PROTEIN: number; CARBS: number; FAT: number };
+        macroGPerKg?: number;
+        fiberSourceId: string;
+        waterSourceId: string;
     }) => {
-        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans/${planId}`, {
-            method: "PATCH",
+        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans/${planId}/recalculate`, {
+            method: "POST",
             headers: getHeaders(),
             body: JSON.stringify(data),
         });

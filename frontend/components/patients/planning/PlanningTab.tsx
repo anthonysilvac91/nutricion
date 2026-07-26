@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Save, CheckCircle, RotateCcw, FileText, ChevronDown } from "lucide-react";
+import { Plus, Save, CheckCircle, RotateCcw, FileText, ChevronDown, ClipboardList } from "lucide-react";
 import { api } from "@/lib/api";
 import { PatientValuesSection, PatientValuesData } from "./PatientValuesSection";
 import { EnergySection, EnergyData } from "./EnergySection";
@@ -22,17 +22,111 @@ interface PlanMeta {
     status:      "DRAFT" | "FINALIZED";
     date:        string;
     finalizedAt: string | null;
+    assessmentId: string;
 }
 
-interface PlanData {
-    patientValues?: PatientValuesData;
-    energyCalc?:    EnergyData;
-    macros?:        MacrosData;
-    micros?:        MicrosData;
+interface CompletedAssessment {
+    id: string;
+    date: string;
+    status: string;
+    populationGroup: string | null;
+}
+
+interface PendingInputs {
+    targetWeightKg?: number;
+    bmrFormulaId?: string;
+    pal?: number;
+    proteinPct?: number;
+    lipidPct?: number;
+    carbPct?: number;
+    fiberSourceId?: string;
+    waterSourceId?: string;
 }
 
 function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString("es-CL", { day: "numeric", month: "short", year: "numeric" });
+}
+
+interface NewPlanPickerProps {
+    patientId: string;
+    variant: "ghost" | "solid";
+    disabled?: boolean;
+    onCreated: (planId: string) => void;
+}
+
+/** Self-contained: owns its own open/loading state so multiple instances (top-bar ghost button + empty-state CTA) never fight over shared state. */
+function NewPlanPicker({ patientId, variant, disabled, onCreated }: NewPlanPickerProps) {
+    const [open, setOpen] = useState(false);
+    const [assessments, setAssessments] = useState<CompletedAssessment[] | null>(null);
+    const [picking, setPicking] = useState(false);
+    const ref = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!open) return;
+        const handleClickOutside = (e: MouseEvent) => {
+            if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+        };
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, [open]);
+
+    const toggle = async () => {
+        setOpen(v => !v);
+        if (assessments === null) {
+            try {
+                setAssessments(await api.getCompletedAssessments(patientId));
+            } catch {
+                setAssessments([]);
+            }
+        }
+    };
+
+    const pick = async (assessmentId: string) => {
+        setPicking(true);
+        setOpen(false);
+        try {
+            const created = await api.createOrGetDraft(patientId, assessmentId);
+            onCreated(created.id);
+        } finally {
+            setPicking(false);
+        }
+    };
+
+    return (
+        <div className="relative" ref={ref}>
+            <button type="button" onClick={toggle} disabled={disabled || picking}
+                className={variant === "ghost"
+                    ? "flex items-center gap-1.5 h-8 px-3 bg-white border border-dashed border-gray-300 rounded-lg text-xs font-semibold text-gray-500 hover:border-[#1DBF73] hover:text-[#1DBF73] transition-colors"
+                    : "flex items-center gap-1.5 px-4 py-2 bg-[#1DBF73] text-white rounded-lg text-xs font-bold shadow-sm hover:bg-[#18a863] transition-colors"}>
+                <Plus className="h-3.5 w-3.5" /> {variant === "ghost" ? "Nueva planificación" : "Crear primera planificación"}
+            </button>
+            {open && (
+                <div className="absolute left-0 top-full mt-1 z-20 w-72 bg-white border border-gray-100 rounded-xl shadow-lg py-1.5 text-xs">
+                    <p className="px-3 py-1.5 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Elegir evaluación</p>
+                    {assessments === null && <p className="px-3 py-2 text-gray-400">Cargando evaluaciones...</p>}
+                    {assessments?.length === 0 && (
+                        <p className="px-3 py-2 text-gray-500 leading-snug">No hay evaluaciones completadas para este paciente. Completa una evaluación en la pestaña Mediciones primero.</p>
+                    )}
+                    {assessments?.map(a => (
+                        <button key={a.id} type="button" onClick={() => pick(a.id)}
+                            className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-50 transition-colors text-gray-700">
+                            <span>Evaluación del {formatDate(a.date)}</span>
+                            <span className="text-[9px] font-bold text-gray-400 uppercase">{a.populationGroup ?? "ADULT"}</span>
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function seedFromCalculationResults(results: Record<string, any> | undefined) {
+    return {
+        patientValues: { targetWeightKg: results?.TARGET_WEIGHT_KG?.numericValue } as Partial<PatientValuesData>,
+        energy: { bmrFormulaId: results?.BMR?.formulaUsed, pal: results?.TDEE?.metadataAsJson?.palValue } as Partial<EnergyData>,
+        macros: { proteinPct: results?.PROTEIN_G?.metadataAsJson?.percent, lipidPct: results?.FAT_G?.metadataAsJson?.percent } as Partial<MacrosData>,
+        micros: { fiberSourceId: results?.FIBER_G?.formulaUsed, waterSourceId: results?.WATER_ML?.formulaUsed } as Partial<MicrosData>,
+    };
 }
 
 interface Props { patientId: string }
@@ -41,24 +135,25 @@ export function PlanningTab({ patientId }: Props) {
     const [activeSection, setActiveSection] = useState<PlanningSection>("patient_values");
     const [plans,         setPlans]         = useState<PlanMeta[]>([]);
     const [selectedId,    setSelectedId]    = useState<string | null>(null);
-    const [planData,      setPlanData]      = useState<PlanData>({});
+    const [plan,          setPlan]          = useState<any>(null);
+    const [context,       setContext]       = useState<any>(null);
     const [loading,       setLoading]       = useState(true);
     const [saving,        setSaving]        = useState(false);
     const [selectorOpen,  setSelectorOpen]  = useState(false);
     const selectorRef = useRef<HTMLDivElement>(null);
 
-    const pendingData = useRef<PlanData>({});
+    const pendingInputs = useRef<PendingInputs>({});
 
     const selectedPlan = plans.find(p => p.id === selectedId) ?? null;
     const isReadOnly   = selectedPlan?.status === "FINALIZED";
     const isDraft      = selectedPlan?.status === "DRAFT";
 
-    // Load plan list
+    const seeds = seedFromCalculationResults(plan?.calculationResults);
+
     const loadPlans = useCallback(async () => {
         try {
             const list: PlanMeta[] = await api.getPlans(patientId);
             setPlans(list);
-            // Auto-select: prefer DRAFT, then latest FINALIZED
             const draft = list.find(p => p.status === "DRAFT");
             const first = draft ?? list[0] ?? null;
             if (first && !selectedId) setSelectedId(first.id);
@@ -73,62 +168,71 @@ export function PlanningTab({ patientId }: Props) {
 
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
-            if (selectorRef.current && !selectorRef.current.contains(e.target as Node)) {
-                setSelectorOpen(false);
-            }
+            if (selectorRef.current && !selectorRef.current.contains(e.target as Node)) setSelectorOpen(false);
         };
         document.addEventListener("mousedown", handleClickOutside);
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    // Load full plan data when selection changes
+    // Load the full plan + its planning context (Assessment-derived baseline + available formula catalogs)
     useEffect(() => {
-        if (!selectedId) { setPlanData({}); return; }
-        api.getPlan(patientId, selectedId).then((p: any) => {
-            setPlanData({
-                patientValues: p.patientValues ?? undefined,
-                energyCalc:    p.energyCalc    ?? undefined,
-                macros:        p.macros        ?? undefined,
-                micros:        p.micros        ?? undefined,
-            });
-            pendingData.current = {};
-        }).catch(() => setPlanData({}));
+        if (!selectedId) { setPlan(null); setContext(null); return; }
+        let cancelled = false;
+        (async () => {
+            try {
+                const p = await api.getPlan(patientId, selectedId);
+                if (cancelled) return;
+                setPlan(p);
+                pendingInputs.current = {};
+                const ctx = await api.getPlanningContext(patientId, p.assessmentId);
+                if (cancelled) return;
+                setContext(ctx);
+            } catch {
+                if (!cancelled) { setPlan(null); setContext(null); }
+            }
+        })();
+        return () => { cancelled = true; };
     }, [selectedId, patientId]);
 
-    const handleSectionChange = useCallback((section: keyof PlanData, data: any) => {
-        pendingData.current = { ...pendingData.current, [section]: data };
+    const handleSectionChange = useCallback((slice: Partial<PendingInputs>) => {
+        pendingInputs.current = { ...pendingInputs.current, ...slice };
     }, []);
 
-    // Create new draft
-    const handleNewPlan = async () => {
-        setSaving(true);
-        try {
-            const plan = await api.createOrGetDraft(patientId);
-            await loadPlans();
-            setSelectedId(plan.id);
-        } finally {
-            setSaving(false);
-        }
+    const handlePlanCreated = async (planId: string) => {
+        await loadPlans();
+        setSelectedId(planId);
     };
 
-    // Save draft
+    const buildRecalculatePayload = () => {
+        const pi = pendingInputs.current;
+        const proteinPct = pi.proteinPct ?? seeds.macros.proteinPct ?? 15;
+        const lipidPct = pi.lipidPct ?? seeds.macros.lipidPct ?? 28;
+        return {
+            bmrFormulaId: pi.bmrFormulaId ?? seeds.energy.bmrFormulaId ?? context.availableFormulas?.bmr?.[0]?.id ?? "",
+            pal: pi.pal ?? seeds.energy.pal ?? context.availableFormulas?.palOptions?.[0]?.pal ?? 1.2,
+            targetWeightKg: pi.targetWeightKg ?? seeds.patientValues.targetWeightKg,
+            macroMethod: "PERCENT" as const,
+            macroPercents: {
+                PROTEIN: proteinPct,
+                FAT: lipidPct,
+                CARBS: 100 - proteinPct - lipidPct,
+            },
+            fiberSourceId: pi.fiberSourceId ?? seeds.micros.fiberSourceId ?? context.availableFormulas?.fiberSources?.[0]?.id ?? "",
+            waterSourceId: pi.waterSourceId ?? seeds.micros.waterSourceId ?? context.availableFormulas?.waterSources?.[0]?.id ?? "",
+        };
+    };
+
     const handleSave = async () => {
         if (!selectedId) return;
         setSaving(true);
         try {
-            await api.savePlan(patientId, selectedId, {
-                patientValues: pendingData.current.patientValues,
-                energyCalc:    pendingData.current.energyCalc,
-                macros:        pendingData.current.macros,
-                micros:        pendingData.current.micros,
-            });
-            pendingData.current = {};
+            const updated = await api.recalculatePlan(patientId, selectedId, buildRecalculatePayload());
+            setPlan(updated);
         } finally {
             setSaving(false);
         }
     };
 
-    // Finalize
     const handleFinalize = async () => {
         if (!selectedId) return;
         setSaving(true);
@@ -141,7 +245,6 @@ export function PlanningTab({ patientId }: Props) {
         }
     };
 
-    // Reopen
     const handleReopen = async () => {
         if (!selectedId) return;
         setSaving(true);
@@ -160,30 +263,25 @@ export function PlanningTab({ patientId }: Props) {
     return (
         <div className="h-full flex flex-col">
 
-            {/* Nueva planificación — solo si no hay borrador activo */}
             {!selectedId && !plans.some(p => p.status === "DRAFT") && (
                 <div className="flex-none mb-3">
-                    <button type="button" onClick={handleNewPlan} disabled={saving}
-                        className="flex items-center gap-1.5 h-8 px-3 bg-white border border-dashed border-gray-300 rounded-lg text-xs font-semibold text-gray-500 hover:border-[#1DBF73] hover:text-[#1DBF73] transition-colors">
-                        <Plus className="h-3.5 w-3.5" /> Nueva planificación
-                    </button>
+                    <NewPlanPicker patientId={patientId} variant="ghost" disabled={saving} onCreated={handlePlanCreated} />
                 </div>
             )}
 
-            {/* No plan state */}
             {!selectedId && (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-400">
                     <FileText className="h-10 w-10 opacity-20" />
                     <p className="text-sm font-medium">No hay planificaciones para este paciente</p>
-                    <button type="button" onClick={handleNewPlan} disabled={saving}
-                        className="flex items-center gap-1.5 px-4 py-2 bg-[#1DBF73] text-white rounded-lg text-xs font-bold shadow-sm hover:bg-[#18a863] transition-colors">
-                        <Plus className="h-3.5 w-3.5" /> Crear primera planificación
-                    </button>
+                    <NewPlanPicker patientId={patientId} variant="solid" disabled={saving} onCreated={handlePlanCreated} />
                 </div>
             )}
 
-            {/* Sub-menu pills + action buttons en la misma fila */}
-            {selectedId && (
+            {selectedId && (!plan || !context) && (
+                <div className="flex-1 flex items-center justify-center text-xs text-gray-400">Cargando planificación...</div>
+            )}
+
+            {selectedId && plan && context && (
                 <>
                     <div className="flex-none mb-3 flex items-center justify-between gap-3">
                         <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide shrink min-w-0">
@@ -195,7 +293,6 @@ export function PlanningTab({ patientId }: Props) {
                             ))}
                         </div>
 
-                        {/* Botones de acción + selector */}
                         <div className="flex items-center gap-2 shrink-0">
                             {isDraft && (
                                 <>
@@ -219,7 +316,6 @@ export function PlanningTab({ patientId }: Props) {
                                 </button>
                             )}
 
-                            {/* Selector de planificaciones */}
                             {plans.length > 0 && (
                                 <div className="relative" ref={selectorRef}>
                                     <button type="button" onClick={() => setSelectorOpen(v => !v)}
@@ -244,10 +340,9 @@ export function PlanningTab({ patientId }: Props) {
                                                 </button>
                                             ))}
                                             {!plans.some(p => p.status === "DRAFT") && (
-                                                <button type="button" onClick={() => { handleNewPlan(); setSelectorOpen(false); }}
-                                                    className="w-full flex items-center gap-1.5 px-3 py-2 text-[#1DBF73] hover:bg-green-50 transition-colors border-t border-gray-100 mt-1 pt-2">
-                                                    <Plus className="h-3 w-3" /> Nueva planificación
-                                                </button>
+                                                <div className="border-t border-gray-100 mt-1 pt-2 px-1">
+                                                    <NewPlanPicker patientId={patientId} variant="ghost" disabled={saving} onCreated={id => { setSelectorOpen(false); handlePlanCreated(id); }} />
+                                                </div>
                                             )}
                                         </div>
                                     )}
@@ -256,36 +351,53 @@ export function PlanningTab({ patientId }: Props) {
                         </div>
                     </div>
 
+                    {context.clinicalAlerts?.length > 0 && (
+                        <div className="flex-none mb-3 flex flex-col gap-1.5">
+                            {context.clinicalAlerts.map((alert: any, i: number) => (
+                                <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 text-amber-700 text-xs font-medium">
+                                    <ClipboardList className="h-3.5 w-3.5 shrink-0" /> {alert.message}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
                     <div className="flex-1 min-h-0 overflow-y-auto">
                         {activeSection === "patient_values" && (
                             <PatientValuesSection
                                 key={`pv-${selectedId}`}
-                                defaultData={planData.patientValues}
-                                onChange={d => handleSectionChange("patientValues", d)}
+                                context={context}
+                                results={plan.calculationResults}
+                                defaultData={seeds.patientValues}
+                                onChange={d => handleSectionChange(d)}
                                 readOnly={isReadOnly}
                             />
                         )}
                         {activeSection === "energy" && (
                             <EnergySection
                                 key={`en-${selectedId}`}
-                                defaultData={planData.energyCalc}
-                                onChange={d => handleSectionChange("energyCalc", d)}
+                                context={context}
+                                results={plan.calculationResults}
+                                defaultData={seeds.energy}
+                                onChange={d => handleSectionChange(d)}
                                 readOnly={isReadOnly}
                             />
                         )}
                         {activeSection === "macros" && (
                             <MacrosSection
                                 key={`ma-${selectedId}`}
-                                defaultData={planData.macros}
-                                onChange={d => handleSectionChange("macros", d)}
+                                results={plan.calculationResults}
+                                defaultData={seeds.macros}
+                                onChange={d => handleSectionChange(d)}
                                 readOnly={isReadOnly}
                             />
                         )}
                         {activeSection === "micros" && (
                             <MicrosSection
                                 key={`mi-${selectedId}`}
-                                defaultData={planData.micros}
-                                onChange={d => handleSectionChange("micros", d)}
+                                results={plan.calculationResults}
+                                availableFormulas={context.availableFormulas}
+                                defaultData={seeds.micros}
+                                onChange={d => handleSectionChange(d)}
                                 readOnly={isReadOnly}
                             />
                         )}

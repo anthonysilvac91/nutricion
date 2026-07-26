@@ -1,59 +1,26 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Scale, Percent, BarChart2 } from "lucide-react";
-
-const FAT_FORMULAS = [
-    { value: "peterson",        label: "Ecuación de Peterson" },
-    { value: "deurenberg",      label: "Ecuación de Deurenberg" },
-    { value: "jackson_pollock", label: "Jackson & Pollock" },
-    { value: "siri",            label: "Ecuación de Siri" },
-];
-
-const PATIENT_HEIGHT_M = 1.65;
-const PATIENT_AGE      = 35;
-const PATIENT_FEMALE   = true;
-
-function calcBMI(kg: number) {
-    if (!kg || kg <= 0) return 0;
-    return parseFloat((kg / (PATIENT_HEIGHT_M ** 2)).toFixed(1));
-}
-
-function classifyBMI(bmi: number) {
-    if (bmi < 18.5) return { label: "Bajo peso",  bg: "bg-blue-100",   color: "text-blue-700" };
-    if (bmi < 25)   return { label: "Eutrofia",    bg: "bg-green-100",  color: "text-green-700" };
-    if (bmi < 30)   return { label: "Sobrepeso",   bg: "bg-orange-100", color: "text-orange-700" };
-    return              { label: "Obesidad",    bg: "bg-red-100",    color: "text-red-700" };
-}
-
-function calcFatPercent(kg: number, formula: string): number {
-    const bmi = calcBMI(kg);
-    const age = PATIENT_AGE;
-    const sex = PATIENT_FEMALE ? 0 : 1;
-    switch (formula) {
-        case "peterson":        return parseFloat(((1.39 * bmi) + (0.16 * age) - (10.34 * sex) - 9).toFixed(2));
-        case "deurenberg":      return parseFloat(((1.20 * bmi) + (0.23 * age) - (10.80 * sex) - 5.4).toFixed(2));
-        case "jackson_pollock": return parseFloat(((1.29 * bmi) + (0.20 * age) - (11.40 * sex) - 8.0).toFixed(2));
-        case "siri":            return parseFloat(((1.41 * bmi) + (0.18 * age) - (12.10 * sex) - 7.4).toFixed(2));
-        default:                return parseFloat(((1.20 * bmi) + (0.23 * age) - (10.80 * sex) - 5.4).toFixed(2));
-    }
-}
-
-const FAT_REF = PATIENT_FEMALE ? "23 – 38 %" : "10 – 25 %";
-const BMI_REF = { text: "18.5 – 24.9 kg/m²", label: "Eutrofia" };
+import { Badge, StatusBadge, formatResultValue, StrategyResult } from "./ResultBadge";
 
 export interface PatientValuesData {
-    weightActual: string;
-    weightObj:    string;
-    fatFormula:   string;
-    fatObj:       string;
-    bmiObj:       string;
+    targetWeightKg?: number;
+}
+
+interface PlanningContext {
+    weightKg: number | null;
+    fatPercentMeasured: number | null;
+    calculatedResults: { BMI?: StrategyResult; BODY_FAT_PERCENTAGE?: StrategyResult };
+    availableFormulas?: { bmi?: { id: string; label: string; reference: { citation: string } }[] };
 }
 
 interface Props {
+    context: PlanningContext;
+    results?: Record<string, StrategyResult>;
     defaultData?: Partial<PatientValuesData>;
-    onChange?:    (data: PatientValuesData) => void;
-    readOnly?:    boolean;
+    onChange?: (data: PatientValuesData) => void;
+    readOnly?: boolean;
 }
 
 function InputCell({ value, onChange, unit, wide = false, readOnly = false }: {
@@ -72,32 +39,38 @@ function InputCell({ value, onChange, unit, wide = false, readOnly = false }: {
     );
 }
 
-function Badge({ label, bg, color }: { label: string; bg: string; color: string }) {
-    return <span className={`inline-flex text-[10px] font-bold px-1.5 py-0.5 rounded-full w-fit ${bg} ${color}`}>{label}</span>;
+function classificationBadge(result?: StrategyResult) {
+    if (!result || result.status !== "CALCULATED" || !result.statusCode) return null;
+    const map: Record<string, { bg: string; color: string }> = {
+        UNDERWEIGHT: { bg: "bg-blue-100", color: "text-blue-700" },
+        NORMAL: { bg: "bg-green-100", color: "text-green-700" },
+        OVERWEIGHT: { bg: "bg-orange-100", color: "text-orange-700" },
+        OBESE: { bg: "bg-red-100", color: "text-red-700" },
+    };
+    const style = map[result.statusCode] ?? { bg: "bg-gray-100", color: "text-gray-600" };
+    return <Badge label={result.statusLabel ?? result.statusCode} {...style} />;
 }
 
-export function PatientValuesSection({ defaultData, onChange, readOnly = false }: Props) {
-    const [weightActual, setWeightActual] = useState(defaultData?.weightActual ?? "72.5");
-    const [weightObj,    setWeightObj]    = useState(defaultData?.weightObj    ?? "60.0");
-    const [fatFormula,   setFatFormula]   = useState(defaultData?.fatFormula   ?? "peterson");
-    const [fatObj,       setFatObj]       = useState(defaultData?.fatObj       ?? "20.0");
-    const [bmiObj,       setBmiObj]       = useState(defaultData?.bmiObj       ?? "");
+export function PatientValuesSection({ context, results, defaultData, onChange, readOnly = false }: Props) {
+    const [targetWeightKg, setTargetWeightKg] = useState(
+        defaultData?.targetWeightKg != null ? String(defaultData.targetWeightKg) : ""
+    );
 
-    const fatActual  = useMemo(() => calcFatPercent(parseFloat(weightActual) || 0, fatFormula), [weightActual, fatFormula]);
-    const bmiActual  = useMemo(() => calcBMI(parseFloat(weightActual) || 0), [weightActual]);
-    const bmiActualC = classifyBMI(bmiActual);
+    const bmiActual = context.calculatedResults?.BMI;
+    const fatActual = context.calculatedResults?.BODY_FAT_PERCENTAGE;
+    const bmiObjetivo = results?.BMI;
 
-    const bmiObjNum  = bmiObj !== "" ? parseFloat(bmiObj) : calcBMI(parseFloat(weightObj) || 0);
-    const bmiObjC    = classifyBMI(bmiObjNum);
-
-    const weightDiff = useMemo(() => {
-        const diff = parseFloat(weightObj) - parseFloat(weightActual);
-        return isNaN(diff) ? null : parseFloat(diff.toFixed(1));
-    }, [weightActual, weightObj]);
+    const weightDiff = (() => {
+        const target = parseFloat(targetWeightKg);
+        if (isNaN(target) || context.weightKg == null) return null;
+        return parseFloat((target - context.weightKg).toFixed(1));
+    })();
 
     useEffect(() => {
-        onChange?.({ weightActual, weightObj, fatFormula, fatObj, bmiObj });
-    }, [weightActual, weightObj, fatFormula, fatObj, bmiObj]);
+        const parsed = parseFloat(targetWeightKg);
+        onChange?.({ targetWeightKg: isNaN(parsed) ? undefined : parsed });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [targetWeightKg]);
 
     return (
         <div className="h-full bg-white rounded-2xl border border-gray-200/70 shadow-[0_1px_4px_rgba(0,0,0,0.05),0_2px_10px_rgba(0,0,0,0.04)] overflow-hidden flex flex-col">
@@ -127,18 +100,19 @@ export function PatientValuesSection({ defaultData, onChange, readOnly = false }
                                 </div>
                             </td>
                             <td className="px-4 py-4 text-xs text-gray-400">—</td>
-                            <td className="px-4 py-4"><InputCell value={weightActual} onChange={setWeightActual} unit="kg" readOnly={readOnly} /></td>
-                            <td className="px-4 py-4"><InputCell value={weightObj} onChange={setWeightObj} unit="kg" readOnly={readOnly} /></td>
+                            <td className="px-4 py-4">
+                                <span className="text-xs font-semibold text-gray-800">{context.weightKg != null ? `${context.weightKg} kg` : "—"}</span>
+                            </td>
+                            <td className="px-4 py-4"><InputCell value={targetWeightKg} onChange={setTargetWeightKg} unit="kg" readOnly={readOnly} /></td>
                             <td className="pl-4 pr-6 py-4">
                                 <div className="flex flex-col gap-1.5">
-                                    <span className="text-xs font-semibold text-gray-800">{weightObj || "—"} kg</span>
-                                    {weightDiff !== null && weightDiff !== 0 && (
+                                    {weightDiff !== null && weightDiff !== 0 ? (
                                         <Badge
                                             label={weightDiff < 0 ? `Reducción de ${Math.abs(weightDiff)} kg` : `Aumento de ${Math.abs(weightDiff)} kg`}
                                             bg={weightDiff < 0 ? "bg-purple-100" : "bg-orange-100"}
                                             color={weightDiff < 0 ? "text-purple-700" : "text-orange-700"}
                                         />
-                                    )}
+                                    ) : <span className="text-xs text-gray-400">—</span>}
                                 </div>
                             </td>
                         </tr>
@@ -149,15 +123,15 @@ export function PatientValuesSection({ defaultData, onChange, readOnly = false }
                                     <span className="text-xs font-semibold text-gray-800 leading-snug">Porcentaje de<br />masa grasa</span>
                                 </div>
                             </td>
+                            <td className="px-4 py-4 text-xs text-gray-400">Medición directa</td>
                             <td className="px-4 py-4">
-                                <select value={fatFormula} disabled={readOnly} onChange={e => setFatFormula(e.target.value)}
-                                    className="h-8 border border-gray-200 rounded-lg px-3 pr-8 text-xs font-medium text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-[#1DBF73]/25 focus:border-[#1DBF73] transition-colors cursor-pointer disabled:bg-gray-50 disabled:cursor-default">
-                                    {FAT_FORMULAS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-                                </select>
+                                <div className="flex flex-col gap-1.5">
+                                    <span className="text-xs font-semibold text-gray-800">{formatResultValue(fatActual, "%")}</span>
+                                    <StatusBadge result={fatActual} />
+                                </div>
                             </td>
-                            <td className="px-4 py-4"><span className="text-xs font-semibold text-gray-800">{fatActual} %</span></td>
-                            <td className="px-4 py-4"><InputCell value={fatObj} onChange={setFatObj} unit="%" readOnly={readOnly} /></td>
-                            <td className="pl-4 pr-6 py-4"><span className="text-xs font-semibold text-gray-800">{FAT_REF}</span></td>
+                            <td className="px-4 py-4 text-xs text-gray-400">—</td>
+                            <td className="pl-4 pr-6 py-4 text-xs text-gray-400">—</td>
                         </tr>
                         <tr className="hover:bg-gray-50/40 transition-colors">
                             <td className="pl-6 pr-4 py-4">
@@ -169,21 +143,20 @@ export function PatientValuesSection({ defaultData, onChange, readOnly = false }
                             <td className="px-4 py-4 text-xs text-gray-400">—</td>
                             <td className="px-4 py-4">
                                 <div className="flex flex-col gap-1.5">
-                                    <div className="h-8 flex items-center"><span className="text-xs font-semibold text-gray-800">{bmiActual} kg/m²</span></div>
-                                    <Badge {...bmiActualC} />
+                                    <span className="text-xs font-semibold text-gray-800">{formatResultValue(bmiActual, "kg/m²")}</span>
+                                    {classificationBadge(bmiActual) ?? <StatusBadge result={bmiActual} />}
                                 </div>
                             </td>
                             <td className="px-4 py-4">
                                 <div className="flex flex-col gap-1.5">
-                                    <InputCell value={bmiObj !== "" ? bmiObj : bmiObjNum.toString()} onChange={setBmiObj} unit="kg/m²" wide readOnly={readOnly} />
-                                    {bmiObjNum > 0 && <Badge {...bmiObjC} />}
+                                    <span className="text-xs font-semibold text-gray-800">{formatResultValue(bmiObjetivo, "kg/m²")}</span>
+                                    {classificationBadge(bmiObjetivo) ?? <StatusBadge result={bmiObjetivo} />}
                                 </div>
                             </td>
                             <td className="pl-4 pr-6 py-4">
-                                <div className="flex flex-col gap-1.5">
-                                    <div className="h-8 flex items-center"><span className="text-xs font-semibold text-gray-800">{BMI_REF.text}</span></div>
-                                    <Badge label={BMI_REF.label} bg="bg-green-100" color="text-green-700" />
-                                </div>
+                                <span className="text-[11px] text-gray-500 leading-snug">
+                                    {context.availableFormulas?.bmi?.[0]?.reference?.citation ?? "—"}
+                                </span>
                             </td>
                         </tr>
                     </tbody>

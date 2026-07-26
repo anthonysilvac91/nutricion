@@ -1,9 +1,10 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtGuard } from '../auth/jwt.guard';
 import { AssessmentsService } from './assessments.service';
 import { CreateAssessmentDto } from './dto/create-assessment.dto';
 import { SubscriptionWriteGuard } from '../auth/guards/subscription-write.guard';
+import { AssessmentStatus } from '@prisma/client';
 
 @ApiTags('Assessments')
 @ApiBearerAuth()
@@ -18,6 +19,13 @@ export class AssessmentsController {
     @Post('patients/:patientId/assessments')
     create(@Req() req: any, @Param('patientId') patientId: string, @Body() dto: CreateAssessmentDto) {
         return this.assessments.create(req.user.sub, patientId, dto);
+    }
+
+    // GET /patients/:id/assessments?status=COMPLETED
+    @ApiOperation({ summary: 'Listar evaluaciones del paciente, opcionalmente filtradas por estado' })
+    @Get('patients/:patientId/assessments')
+    findAll(@Req() req: any, @Param('patientId') patientId: string, @Query('status') status?: AssessmentStatus) {
+        return this.assessments.findAllByPatient(req.user.sub, patientId, status);
     }
 
     // GET /patients/:id/assessments/latest

@@ -1,9 +1,10 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtGuard } from '../auth/jwt.guard';
 import { SubscriptionWriteGuard } from '../auth/guards/subscription-write.guard';
 import { PlansService } from './plans.service';
-import { UpdatePlanDto } from './dto/update-plan.dto';
+import { CreatePlanDto } from './dto/create-plan.dto';
+import { RecalculatePlanDto } from './dto/recalculate-plan.dto';
 
 @ApiTags('Plans')
 @ApiBearerAuth()
@@ -19,12 +20,12 @@ export class PlansController {
         return this.plans.findAll(req.user.sub, patientId);
     }
 
-    // POST /patients/:patientId/plans  →  crea o devuelve borrador activo
-    @ApiOperation({ summary: 'Crear o recuperar borrador activo del paciente' })
+    // POST /patients/:patientId/plans  →  crea o devuelve borrador activo, ligado a un Assessment COMPLETED
+    @ApiOperation({ summary: 'Crear o recuperar borrador activo del paciente, a partir de una evaluación completada' })
     @UseGuards(SubscriptionWriteGuard)
     @Post('patients/:patientId/plans')
-    createOrGetDraft(@Req() req: any, @Param('patientId') patientId: string) {
-        return this.plans.createOrGetDraft(req.user.sub, patientId);
+    createOrGetDraft(@Req() req: any, @Param('patientId') patientId: string, @Body() dto: CreatePlanDto) {
+        return this.plans.createOrGetDraft(req.user.sub, patientId, dto);
     }
 
     // GET /patients/:patientId/plans/:id
@@ -34,12 +35,12 @@ export class PlansController {
         return this.plans.findOne(req.user.sub, patientId, id);
     }
 
-    // PATCH /patients/:patientId/plans/:id
-    @ApiOperation({ summary: 'Guardar borrador (actualizar datos)' })
+    // POST /patients/:patientId/plans/:id/recalculate
+    @ApiOperation({ summary: 'Recalcular resultados clínicos del plan a partir de las elecciones de la nutricionista' })
     @UseGuards(SubscriptionWriteGuard)
-    @Patch('patients/:patientId/plans/:id')
-    save(@Req() req: any, @Param('patientId') patientId: string, @Param('id') id: string, @Body() dto: UpdatePlanDto) {
-        return this.plans.save(req.user.sub, patientId, id, dto);
+    @Post('patients/:patientId/plans/:id/recalculate')
+    recalculate(@Req() req: any, @Param('patientId') patientId: string, @Param('id') id: string, @Body() dto: RecalculatePlanDto) {
+        return this.plans.recalculate(req.user.sub, patientId, id, dto);
     }
 
     // POST /patients/:patientId/plans/:id/finalize

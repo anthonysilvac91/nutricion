@@ -116,10 +116,28 @@ model NutritionalPlan {
   patient   Patient   @relation(fields: [patientId], references: [id])
   userId    String
 
+  assessmentId String
+  assessment   Assessment @relation(fields: [assessmentId], references: [id])
+
   status      PlanStatus @default(DRAFT)
   date        DateTime   @default(now())
   finalizedAt DateTime?
 
+  // Copia congelada de measurements + results relevantes del Assessment al
+  // momento de crear/recalcular el plan (para que el plan no cambie si la
+  // Evaluación fuente se edita después).
+  sourceSnapshot Json
+
+  // Salida estructurada del motor de cálculo versionado: un objeto por
+  // métrica (BMI, BODY_FAT_PERCENTAGE, BMR, TDEE, PROTEIN_G, CARBS_G, FAT_G,
+  // FIBER_G, WATER_ML), cada uno con { value, unit, status, formulaUsed,
+  // formulaVersion, engineVersion, statusCode?, statusLabel? }.
+  calculationResults Json
+  engineVersion      String
+
+  // Legacy: se mantienen para no romper lecturas antiguas del frontend.
+  // El backend ya no acepta contenido arbitrario del cliente aquí; se siguen
+  // poblando como espejo de calculationResults por compatibilidad.
   patientValues Json?
   energyCalc    Json?
   macros        Json?
@@ -130,6 +148,7 @@ model NutritionalPlan {
 
   @@index([patientId])
   @@index([userId])
+  @@index([assessmentId])
 }
 
 // ----------------------------------------------------------------------
@@ -261,8 +280,9 @@ model Assessment {
   clinicalProtocol      String?
   protocolVersion       String?
 
-  measurements MeasurementRecord[]
-  results      CalculatedResult[]
+  measurements     MeasurementRecord[]
+  results          CalculatedResult[]
+  nutritionalPlans NutritionalPlan[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
