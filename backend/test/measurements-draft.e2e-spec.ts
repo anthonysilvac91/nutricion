@@ -2,9 +2,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from './../src/app.module';
+import { PrismaService } from './../src/prisma/prisma.service';
 
 describe('Measurements DRAFT lifecycle (e2e)', () => {
     let app: INestApplication;
+    let prisma: PrismaService;
     let token: string;
     let patientId: string;
     let concurrencyPatientId: string;
@@ -18,6 +20,7 @@ describe('Measurements DRAFT lifecycle (e2e)', () => {
 
         app = moduleFixture.createNestApplication();
         await app.init();
+        prisma = moduleFixture.get(PrismaService);
 
         // 1. Registro/login del nutricionista
         const resAuth = await request(app.getHttpServer())
@@ -448,6 +451,48 @@ describe('Measurements DRAFT lifecycle (e2e)', () => {
             expect(page1.body.data.map((d: any) => d.value)).toEqual([30, 20]);
             expect(page2.body.data.map((d: any) => d.value)).toEqual([10]);
             expect(page1.body.meta).toEqual(expect.objectContaining({ total: 3, totalPages: 2 }));
+        });
+
+        it('NULLS LAST: una evaluación COMPLETED con completedAt = null (dato heredado) queda después de las que sí lo tienen, no antes ni intercalada', async () => {
+            const nullsPatient = await request(app.getHttpServer())
+                .post('/patients')
+                .set('Authorization', `Bearer ${token}`)
+                .send({ firstName: 'Nulls', lastName: 'Last', sex: 'FEMALE', birthDate: '1994-01-01T00:00:00.000Z', activityLevel: 'MODERATE' })
+                .expect(201);
+            const nullsPatientId = nullsPatient.body.id;
+
+            // Estado inalcanzable vía la API (complete() siempre fija completedAt) -- simula un
+            // dato heredado/migrado que quedó COMPLETED sin completedAt, con la MISMA fecha
+            // clínica que otra evaluación sí completada normalmente, para aislar el desempate
+            // exclusivamente en la columna completedAt.
+            const withCompletedAt = await prisma.assessment.create({
+                data: { patientId: nullsPatientId, date: new Date('2026-04-10T12:00:00.000Z'), status: 'COMPLETED', completedAt: new Date('2026-04-10T15:00:00.000Z') },
+            });
+            await prisma.measurementRecord.create({
+                data: { assessmentId: withCompletedAt.id, definitionId: 'm_waist', numericValue: 50 },
+            });
+
+            const withNullCompletedAt = await prisma.assessment.create({
+                data: { patientId: nullsPatientId, date: new Date('2026-04-10T12:00:00.000Z'), status: 'COMPLETED', completedAt: null },
+            });
+            await prisma.measurementRecord.create({
+                data: { assessmentId: withNullCompletedAt.id, definitionId: 'm_waist', numericValue: 99 },
+            });
+
+            const history = await request(app.getHttpServer())
+                .get(`/patients/${nullsPatientId}/measurements/m_waist/history`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(200);
+
+            expect(history.body.data.map((d: any) => d.assessmentId)).toEqual([withCompletedAt.id, withNullCompletedAt.id]);
+
+            const summary = await request(app.getHttpServer())
+                .get(`/patients/${nullsPatientId}/measurement-summary`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(200);
+            const waistCard = summary.body.cards.find((c: any) => c.definitionId === 'm_waist');
+            expect(waistCard.latestCompleted).toEqual(expect.objectContaining({ value: 50, assessmentId: withCompletedAt.id }));
+            expect(waistCard.previousCompleted).toEqual(expect.objectContaining({ value: 99, assessmentId: withNullCompletedAt.id }));
         });
     });
 });

@@ -14,3 +14,16 @@ export function formatClinicalDate(value: string, options?: Intl.DateTimeFormatO
     ...options,
   }).format(new Date(Date.UTC(year, month - 1, day, 12)));
 }
+
+/**
+ * Fecha clínica de "hoy" según el calendario local del usuario (no UTC) -- para que al registrar
+ * una evaluación "de hoy" en, por ejemplo, America/Santiago a las 23:00, quede fechada el mismo
+ * día que el usuario ve en su reloj, no el día siguiente en UTC.
+ */
+export function todayClinicalDate(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}

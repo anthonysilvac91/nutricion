@@ -5,7 +5,7 @@ import { MeasurementDefinition, MeasurementValueDto, HistoryDto } from "@/servic
 import { MeasurementChart } from "./MeasurementChart";
 import { getMeasurementIcon } from "./MeasurementIcons";
 import { X, Trash2, Save, Loader2 } from "lucide-react";
-import { formatClinicalDate } from "@/lib/clinicalDate";
+import { formatClinicalDate, todayClinicalDate } from "@/lib/clinicalDate";
 
 interface Props {
     definition: MeasurementDefinition;
@@ -19,7 +19,7 @@ interface Props {
 }
 
 export function MeasurementDrawer({ definition, draft, hasActiveDraft, draftDate, onClose, onSaveDraftValue, onDeleteDraftValue, loadHistory }: Props) {
-    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate : new Date().toISOString().split("T")[0]);
+    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate : todayClinicalDate());
     const [value, setValue] = useState(draft != null ? String(draft.value) : "");
     const [saving, setSaving] = useState(false);
     const [deleting, setDeleting] = useState(false);
@@ -33,7 +33,7 @@ export function MeasurementDrawer({ definition, draft, hasActiveDraft, draftDate
     // La fecha siempre proviene del DRAFT activo (si existe) -- nunca la decide/edita el
     // frontend por su cuenta; se resincroniza si el borrador cambia mientras el drawer está abierto.
     useEffect(() => {
-        setDate(hasActiveDraft && draftDate ? draftDate : new Date().toISOString().split("T")[0]);
+        setDate(hasActiveDraft && draftDate ? draftDate : todayClinicalDate());
     }, [hasActiveDraft, draftDate]);
 
     useEffect(() => {

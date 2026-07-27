@@ -19,9 +19,11 @@ interface Props {
 }
 
 export function MeasurementChart({ records, unit, heightClass = "h-[250px]" }: Props) {
-    // We need to sort by date ascending for the chart (oldest to newest)
+    // We need to sort by date ascending for the chart (oldest to newest). Clinical dates are
+    // YYYY-MM-DD strings, which sort correctly with plain lexicographic comparison -- no need
+    // (and no correctness benefit) to parse them as a Date.
     const sortedRecords = useMemo(() => {
-        return [...records].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        return [...records].sort((a, b) => a.date.localeCompare(b.date));
     }, [records]);
 
     if (records.length === 0) {

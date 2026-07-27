@@ -6,6 +6,7 @@ import { X, Save } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { MeasurementDefinition, MeasurementGroup, GROUP_LABELS } from "@/services/measurementsService";
+import { todayClinicalDate } from "@/lib/clinicalDate";
 
 interface Props {
     isOpen: boolean;
@@ -17,7 +18,7 @@ interface Props {
 }
 
 export function MeasurementQuickAddModal({ isOpen, onClose, visibleDefinitions, hasActiveDraft, draftDate, onSaveAll }: Props) {
-    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate : new Date().toISOString().split('T')[0]);
+    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate : todayClinicalDate());
 
     // Contiene los valores numéricos ingresados { "m_weight": "80.5", ... }
     const [values, setValues] = useState<Record<string, string>>({});
@@ -27,7 +28,7 @@ export function MeasurementQuickAddModal({ isOpen, onClose, visibleDefinitions, 
     // Se resincroniza cada vez que se abre el modal o cambia el borrador vigente.
     useEffect(() => {
         if (!isOpen) return;
-        setDate(hasActiveDraft && draftDate ? draftDate : new Date().toISOString().split('T')[0]);
+        setDate(hasActiveDraft && draftDate ? draftDate : todayClinicalDate());
     }, [isOpen, hasActiveDraft, draftDate]);
 
     if (!isOpen || typeof document === "undefined") return null;

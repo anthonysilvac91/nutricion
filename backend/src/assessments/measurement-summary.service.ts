@@ -137,7 +137,7 @@ export class MeasurementSummaryService {
                 include: { assessment: { select: { id: true, date: true } } },
                 orderBy: [
                     { assessment: { date: 'desc' } },
-                    { assessment: { completedAt: 'desc' } },
+                    { assessment: { completedAt: { sort: 'desc', nulls: 'last' } } },
                     { createdAt: 'desc' },
                     { id: 'desc' },
                 ],

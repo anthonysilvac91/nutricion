@@ -8,7 +8,7 @@ import {
     measurementsService,
 } from "@/services/measurementsService";
 import { useMockMode } from "@/lib/mock-mode-context";
-import { formatClinicalDate } from "@/lib/clinicalDate";
+import { formatClinicalDate, todayClinicalDate } from "@/lib/clinicalDate";
 import { MeasureSummaryCard } from "@/components/patients/measurements/MeasureSummaryCard";
 import { MeasurementDrawer } from "@/components/patients/measurements/MeasurementDrawer";
 import { MeasurementSettingsModal } from "@/components/patients/measurements/MeasurementSettingsModal";
@@ -106,7 +106,7 @@ export function MeasurementsTab({ patientId }: Props) {
         if (isMock) return;
         setBusy(true);
         try {
-            await measurementsService.createOrGetDraft(patientId);
+            await measurementsService.createOrGetDraft(patientId, todayClinicalDate());
             await loadSummary();
         } finally {
             setBusy(false);

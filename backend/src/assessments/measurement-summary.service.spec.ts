@@ -134,7 +134,7 @@ describe('MeasurementSummaryService', () => {
                 where: { definitionId: 'm_weight', assessment: { patientId: 'patient-1', status: 'COMPLETED' } },
                 orderBy: [
                     { assessment: { date: 'desc' } },
-                    { assessment: { completedAt: 'desc' } },
+                    { assessment: { completedAt: { sort: 'desc', nulls: 'last' } } },
                     { createdAt: 'desc' },
                     { id: 'desc' },
                 ],
