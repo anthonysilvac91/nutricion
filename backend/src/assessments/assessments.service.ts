@@ -6,6 +6,7 @@ import { CreateDraftDto } from './dto/create-draft.dto';
 import { UpsertMeasurementsDto } from './dto/upsert-measurements.dto';
 import { ContextResolverService } from './context-resolver.service';
 import { ClinicalCalculationEngineService, EngineResult } from './clinical-calculation-engine.service';
+import { formatClinicalDate, parseClinicalDate, parseClinicalOrLegacyIsoDate } from '../common/clinical-date.util';
 
 type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
 
@@ -99,7 +100,7 @@ export class AssessmentsService {
             throw new NotFoundException('Patient not found');
         }
 
-        const assessmentDate = new Date(dto.date);
+        const assessmentDate = parseClinicalOrLegacyIsoDate(dto.date);
 
         // 1. Resolve clinical context
         const context = this.contextResolver.resolveContext(patient, assessmentDate);
@@ -203,11 +204,13 @@ export class AssessmentsService {
         });
         if (!patient) throw new NotFoundException('Patient not found');
 
-        return this.prisma.assessment.findMany({
+        const assessments = await this.prisma.assessment.findMany({
             where: { patientId, ...(status ? { status } : {}) },
             orderBy: { date: 'desc' },
             select: { id: true, date: true, status: true, populationGroup: true },
         });
+
+        return assessments.map(a => ({ ...a, date: formatClinicalDate(a.date) }));
     }
 
     async findLatestByPatient(userId: string, patientId: string) {
@@ -248,7 +251,7 @@ export class AssessmentsService {
             const created = await this.prisma.assessment.create({
                 data: {
                     patientId,
-                    date: dto.date ? new Date(dto.date) : new Date(),
+                    date: dto.date ? parseClinicalDate(dto.date) : parseClinicalDate(formatClinicalDate(new Date())),
                     status: 'DRAFT',
                 },
             });
@@ -410,6 +413,7 @@ export class AssessmentsService {
 
         return {
             ...assessment,
+            date: formatClinicalDate(assessment.date),
             results: resultsUi
         };
     }

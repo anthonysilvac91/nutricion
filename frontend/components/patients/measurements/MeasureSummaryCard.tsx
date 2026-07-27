@@ -3,6 +3,7 @@
 import { MeasurementDefinition, MeasurementValueDto, MeasurementChangeDto } from "@/services/measurementsService";
 import { TrendingDown, TrendingUp, Minus, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatClinicalDate as formatDate } from "@/lib/clinicalDate";
 import { getMeasurementIcon } from "./MeasurementIcons";
 
 interface Props {
@@ -14,10 +15,6 @@ interface Props {
     hasActiveDraft: boolean;
     isActive: boolean;
     onClick: () => void;
-}
-
-function formatDate(iso: string) {
-    return new Date(iso).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 /**

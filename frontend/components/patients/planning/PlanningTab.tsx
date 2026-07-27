@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Plus, Save, CheckCircle, RotateCcw, FileText, ChevronDown, ClipboardList } from "lucide-react";
 import { api } from "@/lib/api";
+import { formatClinicalDate } from "@/lib/clinicalDate";
 import { PatientValuesSection, PatientValuesData } from "./PatientValuesSection";
 import { EnergySection, EnergyData } from "./EnergySection";
 import { MacrosSection, MacrosData } from "./MacrosSection";
@@ -43,6 +44,8 @@ interface PendingInputs {
     waterSourceId?: string;
 }
 
+// Para NutritionalPlan.date/finalizedAt (instantes reales, no fechas clínicas) -- la hora local
+// del visor es lo correcto aquí, a diferencia de Assessment.date (ver formatClinicalDate).
 function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString("es-CL", { day: "numeric", month: "short", year: "numeric" });
 }
@@ -110,7 +113,7 @@ function NewPlanPicker({ patientId, variant, disabled, onCreated }: NewPlanPicke
                     {assessments?.map(a => (
                         <button key={a.id} type="button" onClick={() => pick(a.id)}
                             className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-50 transition-colors text-gray-700">
-                            <span>Evaluación del {formatDate(a.date)}</span>
+                            <span>Evaluación del {formatClinicalDate(a.date)}</span>
                             <span className="text-[9px] font-bold text-gray-400 uppercase">{a.populationGroup ?? "ADULT"}</span>
                         </button>
                     ))}

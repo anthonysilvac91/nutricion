@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { formatClinicalDate } from '../common/clinical-date.util';
 
 export type Trend = 'UP' | 'DOWN' | 'FLAT';
 
@@ -7,7 +8,7 @@ export interface MeasurementValue {
     assessmentId: string;
     recordId: string;
     value: number | string;
-    date: Date;
+    date: string;
 }
 
 interface RankedMeasurementRow {
@@ -51,7 +52,7 @@ export class MeasurementSummaryService {
                         a.date AS "date",
                         ROW_NUMBER() OVER (
                             PARTITION BY mr."definitionId"
-                            ORDER BY a.date DESC, mr."createdAt" DESC
+                            ORDER BY a.date DESC, a."completedAt" DESC NULLS LAST, mr."createdAt" DESC, mr.id DESC
                         ) AS rn
                     FROM "MeasurementRecord" mr
                     JOIN "Assessment" a ON a.id = mr."assessmentId"
@@ -68,7 +69,7 @@ export class MeasurementSummaryService {
 
         for (const row of ranked) {
             const value = row.numericValue ?? row.stringValue!;
-            const entry: MeasurementValue = { assessmentId: row.assessmentId, recordId: row.recordId, value, date: row.date };
+            const entry: MeasurementValue = { assessmentId: row.assessmentId, recordId: row.recordId, value, date: formatClinicalDate(row.date) };
             const rank = Number(row.rn);
             if (rank === 1) latestByDefinition.set(row.definitionId, entry);
             else if (rank === 2) previousByDefinition.set(row.definitionId, entry);
@@ -84,7 +85,7 @@ export class MeasurementSummaryService {
                     assessmentId: draftAssessment.id,
                     recordId: m.id,
                     value: m.numericValue ?? m.stringValue!,
-                    date: draftAssessment.date,
+                    date: formatClinicalDate(draftAssessment.date),
                 });
             }
         }
@@ -110,7 +111,7 @@ export class MeasurementSummaryService {
             activeDraft: draftAssessment
                 ? {
                     id: draftAssessment.id,
-                    date: draftAssessment.date,
+                    date: formatClinicalDate(draftAssessment.date),
                     status: draftAssessment.status,
                     measurementCount: draftAssessment.measurements.length,
                     updatedAt: draftAssessment.updatedAt,
@@ -134,7 +135,12 @@ export class MeasurementSummaryService {
             this.prisma.measurementRecord.findMany({
                 where,
                 include: { assessment: { select: { id: true, date: true } } },
-                orderBy: { assessment: { date: 'desc' } },
+                orderBy: [
+                    { assessment: { date: 'desc' } },
+                    { assessment: { completedAt: 'desc' } },
+                    { createdAt: 'desc' },
+                    { id: 'desc' },
+                ],
                 skip: (page - 1) * pageSize,
                 take: pageSize,
             }),
@@ -147,7 +153,7 @@ export class MeasurementSummaryService {
                 recordId: r.id,
                 assessmentId: r.assessment.id,
                 value: r.numericValue ?? r.stringValue,
-                date: r.assessment.date,
+                date: formatClinicalDate(r.assessment.date),
             })),
             meta: {
                 page,
@@ -158,7 +164,7 @@ export class MeasurementSummaryService {
         };
     }
 
-    private computeChange(latest: MeasurementValue | null, previous: MeasurementValue | null): { difference: number; trend: Trend; fromDate: Date; toDate: Date } | null {
+    private computeChange(latest: MeasurementValue | null, previous: MeasurementValue | null): { difference: number; trend: Trend; fromDate: string; toDate: string } | null {
         if (!latest || !previous || typeof latest.value !== 'number' || typeof previous.value !== 'number') return null;
         const difference = parseFloat((latest.value - previous.value).toFixed(2));
         const trend: Trend = difference > 0 ? 'UP' : difference < 0 ? 'DOWN' : 'FLAT';

@@ -76,7 +76,7 @@ describe('AssessmentsService', () => {
             });
             engine.calculateAll.mockReturnValue([]);
             tx.assessment.create.mockResolvedValue({ id: 'assessment-1' });
-            prisma.assessment.findFirst.mockResolvedValue({ id: 'assessment-1', measurements: [], results: [] });
+            prisma.assessment.findFirst.mockResolvedValue({ id: 'assessment-1', date: new Date('2026-03-01T12:00:00.000Z'), measurements: [], results: [] });
         });
 
         it('filters patient ownership before creating an assessment', async () => {
@@ -129,7 +129,7 @@ describe('AssessmentsService', () => {
     });
 
     it('filters assessment reads by patient owner', async () => {
-        prisma.assessment.findFirst.mockResolvedValue({ id: 'assessment-1', measurements: [], results: [] });
+        prisma.assessment.findFirst.mockResolvedValue({ id: 'assessment-1', date: new Date('2026-03-01T12:00:00.000Z'), measurements: [], results: [] });
         await service.findOne('user-1', 'assessment-1');
         expect(prisma.assessment.findFirst).toHaveBeenCalledWith({
             where: { id: 'assessment-1', patient: { userId: 'user-1' } },
@@ -139,7 +139,7 @@ describe('AssessmentsService', () => {
 
     it('filters latest patient assessment reads by patient owner', async () => {
         prisma.patient.findFirst.mockResolvedValue({ id: 'patient-1' });
-        prisma.assessment.findFirst.mockResolvedValue({ id: 'assessment-1', measurements: [], results: [] });
+        prisma.assessment.findFirst.mockResolvedValue({ id: 'assessment-1', date: new Date('2026-03-01T12:00:00.000Z'), measurements: [], results: [] });
         await service.findLatestByPatient('user-1', 'patient-1');
         expect(prisma.assessment.findFirst).toHaveBeenCalledWith({
             where: { patientId: 'patient-1' },
@@ -164,11 +164,25 @@ describe('AssessmentsService', () => {
             prisma.patient.findFirst.mockResolvedValue({ id: 'patient-1' });
             prisma.assessment.findFirst
                 .mockResolvedValueOnce({ id: 'draft-1', status: 'DRAFT' })
-                .mockResolvedValueOnce({ id: 'draft-1', measurements: [], results: [] });
+                .mockResolvedValueOnce({ id: 'draft-1', date: new Date('2026-07-26T12:00:00.000Z'), measurements: [], results: [] });
 
             const result = await service.createOrGetDraft('user-1', 'patient-1', {});
             expect(prisma.assessment.create).not.toHaveBeenCalled();
             expect(result.id).toBe('draft-1');
+        });
+
+        it('creates a new DRAFT anchored at noon UTC for the given clinical date, and returns that exact date as a string', async () => {
+            prisma.patient.findFirst.mockResolvedValue({ id: 'patient-1' });
+            prisma.assessment.findFirst.mockResolvedValueOnce(null); // no existing DRAFT
+            prisma.assessment.create.mockResolvedValue({ id: 'draft-2' });
+            prisma.assessment.findFirst.mockResolvedValueOnce({ id: 'draft-2', date: new Date('2026-07-26T12:00:00.000Z'), measurements: [], results: [] });
+
+            const result = await service.createOrGetDraft('user-1', 'patient-1', { date: '2026-07-26' });
+
+            expect(prisma.assessment.create).toHaveBeenCalledWith({
+                data: { patientId: 'patient-1', date: new Date('2026-07-26T12:00:00.000Z'), status: 'DRAFT' },
+            });
+            expect(result.date).toBe('2026-07-26');
         });
     });
 
@@ -194,7 +208,7 @@ describe('AssessmentsService', () => {
             it('locks the row via FOR UPDATE, then upserts each measurement through the same tx client', async () => {
                 mockLockRow('DRAFT');
                 tx.measurementDefinition.findMany.mockResolvedValue([{ id: 'm_weight' }]);
-                tx.assessment.findFirst.mockResolvedValue({ id: 'assessment-1', measurements: [{ definitionId: 'm_weight' }], results: [] });
+                tx.assessment.findFirst.mockResolvedValue({ id: 'assessment-1', date: new Date('2026-07-26T12:00:00.000Z'), measurements: [{ definitionId: 'm_weight' }], results: [] });
 
                 const result = await service.upsertMeasurements('user-1', 'patient-1', 'assessment-1', dto);
 
@@ -238,7 +252,7 @@ describe('AssessmentsService', () => {
             it('deletes the measurement through the locked tx and returns the updated assessment', async () => {
                 mockLockRow('DRAFT');
                 tx.measurementRecord.deleteMany.mockResolvedValue({ count: 1 });
-                tx.assessment.findFirst.mockResolvedValue({ id: 'assessment-1', measurements: [], results: [] });
+                tx.assessment.findFirst.mockResolvedValue({ id: 'assessment-1', date: new Date('2026-07-26T12:00:00.000Z'), measurements: [], results: [] });
 
                 const result = await service.removeMeasurement('user-1', 'patient-1', 'assessment-1', 'm_weight');
                 expect(tx.measurementRecord.deleteMany).toHaveBeenCalledWith({ where: { assessmentId: 'assessment-1', definitionId: 'm_weight' } });
@@ -278,7 +292,7 @@ describe('AssessmentsService', () => {
                 mockLockRow('DRAFT');
                 tx.assessment.findFirst
                     .mockResolvedValueOnce(draftWithMeasurements) // read inside complete()
-                    .mockResolvedValueOnce({ id: 'assessment-1', status: 'COMPLETED', measurements: [], results: [] }); // final re-read
+                    .mockResolvedValueOnce({ id: 'assessment-1', status: 'COMPLETED', date: draftWithMeasurements.date, measurements: [], results: [] }); // final re-read
                 tx.patient.findFirstOrThrow.mockResolvedValue({ id: 'patient-1', sex: 'MALE', birthDate: new Date('1990-01-01'), activityLevel: 'MODERATE' });
                 contextResolver.resolveContext.mockReturnValue({ ageAtAssessmentMonths: 432, populationGroup: 'ADULT', specialProfile: 'STANDARD', clinicalProtocol: 'STANDARD' });
                 engine.calculateAll.mockReturnValue([{ metricId: 'BMI', status: 'CALCULATED', numericValue: 22.8, formulaUsed: 'BMI_ADULT_V1', formulaVersion: 'v1.0.0', engineVersion: 'v1.0.0' }]);
@@ -292,6 +306,22 @@ describe('AssessmentsService', () => {
                     where: { id: 'assessment-1', status: 'DRAFT' },
                     data: expect.objectContaining({ status: 'COMPLETED', completedAt: expect.any(Date) }),
                 });
+            });
+
+            it('returns the clinical date unchanged as a YYYY-MM-DD string, never touching it on completion', async () => {
+                mockLockRow('DRAFT');
+                tx.assessment.findFirst
+                    .mockResolvedValueOnce(draftWithMeasurements)
+                    .mockResolvedValueOnce({ id: 'assessment-1', status: 'COMPLETED', date: draftWithMeasurements.date, measurements: [], results: [] });
+                tx.patient.findFirstOrThrow.mockResolvedValue({ id: 'patient-1', sex: 'MALE', birthDate: new Date('1990-01-01'), activityLevel: 'MODERATE' });
+                contextResolver.resolveContext.mockReturnValue({ ageAtAssessmentMonths: 432, populationGroup: 'ADULT', specialProfile: 'STANDARD', clinicalProtocol: 'STANDARD' });
+                engine.calculateAll.mockReturnValue([{ metricId: 'BMI', status: 'CALCULATED', numericValue: 22.8, formulaUsed: 'BMI_ADULT_V1', formulaVersion: 'v1.0.0', engineVersion: 'v1.0.0' }]);
+                tx.assessment.updateMany.mockResolvedValue({ count: 1 });
+
+                const result = await service.complete('user-1', 'patient-1', 'assessment-1');
+
+                expect(result.date).toBe('2026-07-26');
+                expect(tx.assessment.updateMany.mock.calls[0][0].data.date).toBeUndefined();
             });
 
             it('throws ConflictException without duplicating results when the conditional status flip affects 0 rows', async () => {
@@ -314,7 +344,7 @@ describe('AssessmentsService', () => {
                 mockLockRow('DRAFT');
                 tx.assessment.findFirst
                     .mockResolvedValueOnce({ ...draftWithMeasurements, measurements: [{ definitionId: 'm_waist', numericValue: 80, stringValue: null }] })
-                    .mockResolvedValueOnce({ id: 'assessment-1', status: 'COMPLETED', measurements: [], results: [] });
+                    .mockResolvedValueOnce({ id: 'assessment-1', status: 'COMPLETED', date: draftWithMeasurements.date, measurements: [], results: [] });
                 tx.patient.findFirstOrThrow.mockResolvedValue({ id: 'patient-1', sex: 'MALE', birthDate: new Date('1990-01-01'), activityLevel: 'MODERATE' });
                 contextResolver.resolveContext.mockReturnValue({ ageAtAssessmentMonths: 432, populationGroup: 'ADULT', specialProfile: 'STANDARD', clinicalProtocol: 'STANDARD' });
                 engine.calculateAll.mockReturnValue([{ metricId: 'BMI', status: 'MISSING_DATA', formulaUsed: 'BMI_ADULT_V1', formulaVersion: 'v1.0.0', engineVersion: 'v1.0.0' }]);

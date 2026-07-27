@@ -170,8 +170,10 @@ describe('Assessments (e2e)', () => {
             .expect(200);
 
         expect(res.body.status).toBe('COMPLETED');
-        // Note: It should return the one from 2026-03-02 as it's the latest
-        expect(res.body.date).toBe('2026-03-02T10:00:00.000Z');
+        // Note: It should return the one from 2026-03-02 as it's the latest. Assessment.date is a
+        // clinical calendar date, so the API normalizes it to YYYY-MM-DD regardless of the
+        // full-ISO legacy input it was created with.
+        expect(res.body.date).toBe('2026-03-02');
     });
 
     it('GET /patients/:id/summary - returns proper summary', async () => {

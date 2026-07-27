@@ -64,7 +64,7 @@ describe('Measurements DRAFT lifecycle (e2e)', () => {
         const res = await request(app.getHttpServer())
             .post(`/patients/${patientId}/assessments/draft`)
             .set('Authorization', `Bearer ${token}`)
-            .send({ date: '2026-06-15T00:00:00.000Z' })
+            .send({ date: '2026-06-15' })
             .expect(201);
 
         expect(res.body.status).toBe('DRAFT');
@@ -161,7 +161,7 @@ describe('Measurements DRAFT lifecycle (e2e)', () => {
         const resDraft = await request(app.getHttpServer())
             .post(`/patients/${patientId}/assessments/draft`)
             .set('Authorization', `Bearer ${token}`)
-            .send({ date: '2026-07-26T00:00:00.000Z' })
+            .send({ date: '2026-07-26' })
             .expect(201);
         secondAssessmentId = resDraft.body.id;
         expect(secondAssessmentId).not.toBe(firstAssessmentId);
@@ -216,7 +216,7 @@ describe('Measurements DRAFT lifecycle (e2e)', () => {
         const thirdDraft = await request(app.getHttpServer())
             .post(`/patients/${patientId}/assessments/draft`)
             .set('Authorization', `Bearer ${token}`)
-            .send({ date: '2026-09-01T00:00:00.000Z' })
+            .send({ date: '2026-09-01' })
             .expect(201);
         const thirdAssessmentId = thirdDraft.body.id;
 
@@ -255,7 +255,7 @@ describe('Measurements DRAFT lifecycle (e2e)', () => {
         const raceDraft = await request(app.getHttpServer())
             .post(`/patients/${concurrencyPatientId}/assessments/draft`)
             .set('Authorization', `Bearer ${token}`)
-            .send({ date: '2026-08-01T00:00:00.000Z' })
+            .send({ date: '2026-08-01' })
             .expect(201);
         const raceAssessmentId = raceDraft.body.id;
 
@@ -286,7 +286,7 @@ describe('Measurements DRAFT lifecycle (e2e)', () => {
         const raceDraft = await request(app.getHttpServer())
             .post(`/patients/${concurrencyPatientId}/assessments/draft`)
             .set('Authorization', `Bearer ${token}`)
-            .send({ date: '2026-08-15T00:00:00.000Z' })
+            .send({ date: '2026-08-15' })
             .expect(201);
         const raceAssessmentId = raceDraft.body.id;
 
@@ -319,5 +319,135 @@ describe('Measurements DRAFT lifecycle (e2e)', () => {
             const weightResult = final.body.measurements.find((m: any) => m.definitionId === 'm_weight');
             expect(weightResult.numericValue).toBe(999);
         }
+    });
+
+    describe('fechas clínicas sin desplazamiento por zona horaria', () => {
+        let tzPatientId: string;
+
+        beforeAll(async () => {
+            const res = await request(app.getHttpServer())
+                .post('/patients')
+                .set('Authorization', `Bearer ${token}`)
+                .send({ firstName: 'TZ', lastName: 'Patient', sex: 'FEMALE', birthDate: '1994-01-01T00:00:00.000Z', activityLevel: 'MODERATE' })
+                .expect(201);
+            tzPatientId = res.body.id;
+        });
+
+        it('el DRAFT devuelve exactamente el mismo string YYYY-MM-DD que se envió, sin importar la TZ del proceso backend', async () => {
+            const res = await request(app.getHttpServer())
+                .post(`/patients/${tzPatientId}/assessments/draft`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ date: '2026-07-26' })
+                .expect(201);
+
+            expect(res.body.date).toBe('2026-07-26');
+
+            // Solo puede existir un DRAFT activo por paciente -- se completa para no bloquear
+            // con su fecha la creación del siguiente DRAFT en el test que sigue.
+            await request(app.getHttpServer())
+                .patch(`/patients/${tzPatientId}/assessments/${res.body.id}/measurements`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ measurements: [{ definitionId: 'm_weight', numericValue: 61 }] })
+                .expect(200);
+            await request(app.getHttpServer())
+                .post(`/patients/${tzPatientId}/assessments/${res.body.id}/complete`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(201);
+        });
+
+        it('completar no altera la fecha clínica, mientras que completedAt sí es un timestamp ISO completo', async () => {
+            const draft = await request(app.getHttpServer())
+                .post(`/patients/${tzPatientId}/assessments/draft`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ date: '2026-01-31' })
+                .expect(201);
+
+            await request(app.getHttpServer())
+                .patch(`/patients/${tzPatientId}/assessments/${draft.body.id}/measurements`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ measurements: [{ definitionId: 'm_weight', numericValue: 60 }] })
+                .expect(200);
+
+            const completed = await request(app.getHttpServer())
+                .post(`/patients/${tzPatientId}/assessments/${draft.body.id}/complete`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(201);
+
+            expect(completed.body.date).toBe('2026-01-31');
+            expect(completed.body.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+        });
+
+        it.each(['2026-13-01', '2026-02-30', '26-07-2026'])('rechaza "%s" como fecha de DRAFT con 400', async (badDate) => {
+            await request(app.getHttpServer())
+                .post(`/patients/${tzPatientId}/assessments/draft`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ date: badDate })
+                .expect(400);
+        });
+
+        it('el endpoint legado acepta tanto YYYY-MM-DD como ISO completo, normalizando ambos al mismo día calendario', async () => {
+            const resShort = await request(app.getHttpServer())
+                .post(`/patients/${tzPatientId}/assessments`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ date: '2026-05-10', measurements: [{ definitionId: 'm_weight', numericValue: 65 }] })
+                .expect(201);
+            expect(resShort.body.date).toBe('2026-05-10');
+
+            const resIso = await request(app.getHttpServer())
+                .post(`/patients/${tzPatientId}/assessments`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ date: '2026-05-11T23:30:00.000Z', measurements: [{ definitionId: 'm_weight', numericValue: 66 }] })
+                .expect(201);
+            expect(resIso.body.date).toBe('2026-05-11');
+        });
+
+        it('orden determinista: tres evaluaciones con la MISMA fecha clínica pero completedAt distintos se ordenan por completedAt, no por azar', async () => {
+            const sameDate = '2026-04-01';
+            const values = [10, 20, 30];
+            const completedIds: string[] = [];
+
+            for (const value of values) {
+                const draft = await request(app.getHttpServer())
+                    .post(`/patients/${tzPatientId}/assessments/draft`)
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({ date: sameDate })
+                    .expect(201);
+                await request(app.getHttpServer())
+                    .patch(`/patients/${tzPatientId}/assessments/${draft.body.id}/measurements`)
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({ measurements: [{ definitionId: 'm_waist', numericValue: value }] })
+                    .expect(200);
+                const completed = await request(app.getHttpServer())
+                    .post(`/patients/${tzPatientId}/assessments/${draft.body.id}/complete`)
+                    .set('Authorization', `Bearer ${token}`)
+                    .expect(201);
+                completedIds.push(completed.body.id);
+                // completedAt tiene precisión de milisegundo -- sin esta pausa real, dos
+                // completados consecutivos podrían caer en el mismo milisegundo y el orden
+                // dejaría de ser determinista por esa columna.
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+
+            const summary = await request(app.getHttpServer())
+                .get(`/patients/${tzPatientId}/measurement-summary`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(200);
+            const waistCard = summary.body.cards.find((c: any) => c.definitionId === 'm_waist');
+            expect(waistCard.latestCompleted).toEqual(expect.objectContaining({ value: 30, assessmentId: completedIds[2] }));
+            expect(waistCard.previousCompleted).toEqual(expect.objectContaining({ value: 20, assessmentId: completedIds[1] }));
+
+            const page1 = await request(app.getHttpServer())
+                .get(`/patients/${tzPatientId}/measurements/m_waist/history?page=1&pageSize=2`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(200);
+            const page2 = await request(app.getHttpServer())
+                .get(`/patients/${tzPatientId}/measurements/m_waist/history?page=2&pageSize=2`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(200);
+
+            expect(page1.body.data.map((d: any) => d.value)).toEqual([30, 20]);
+            expect(page2.body.data.map((d: any) => d.value)).toEqual([10]);
+            expect(page1.body.meta).toEqual(expect.objectContaining({ total: 3, totalPages: 2 }));
+        });
     });
 });

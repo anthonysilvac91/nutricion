@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsArray, IsDateString, IsNumber, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { IsArray, IsNumber, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
 
 export class MeasurementRecordDto {
   @ApiProperty({ example: 'm_weight' })
@@ -34,8 +34,11 @@ export class MeasurementRecordDto {
 }
 
 export class CreateAssessmentDto {
-  @ApiProperty({ example: '2025-10-25T00:00:00.000Z' })
-  @IsDateString()
+  @ApiProperty({
+    example: '2025-10-25',
+    description: 'Fecha clínica (YYYY-MM-DD). Por compatibilidad también acepta un timestamp ISO completo (deprecado); se normaliza al mismo día calendario en UTC.',
+  })
+  @IsString()
   date: string;
 
   @ApiProperty({ type: [MeasurementRecordDto] })

@@ -5,6 +5,7 @@ import { MeasurementDefinition, MeasurementValueDto, HistoryDto } from "@/servic
 import { MeasurementChart } from "./MeasurementChart";
 import { getMeasurementIcon } from "./MeasurementIcons";
 import { X, Trash2, Save, Loader2 } from "lucide-react";
+import { formatClinicalDate } from "@/lib/clinicalDate";
 
 interface Props {
     definition: MeasurementDefinition;
@@ -18,7 +19,7 @@ interface Props {
 }
 
 export function MeasurementDrawer({ definition, draft, hasActiveDraft, draftDate, onClose, onSaveDraftValue, onDeleteDraftValue, loadHistory }: Props) {
-    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate.split("T")[0] : new Date().toISOString().split("T")[0]);
+    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate : new Date().toISOString().split("T")[0]);
     const [value, setValue] = useState(draft != null ? String(draft.value) : "");
     const [saving, setSaving] = useState(false);
     const [deleting, setDeleting] = useState(false);
@@ -32,7 +33,7 @@ export function MeasurementDrawer({ definition, draft, hasActiveDraft, draftDate
     // La fecha siempre proviene del DRAFT activo (si existe) -- nunca la decide/edita el
     // frontend por su cuenta; se resincroniza si el borrador cambia mientras el drawer está abierto.
     useEffect(() => {
-        setDate(hasActiveDraft && draftDate ? draftDate.split("T")[0] : new Date().toISOString().split("T")[0]);
+        setDate(hasActiveDraft && draftDate ? draftDate : new Date().toISOString().split("T")[0]);
     }, [hasActiveDraft, draftDate]);
 
     useEffect(() => {
@@ -202,7 +203,7 @@ export function MeasurementDrawer({ definition, draft, hasActiveDraft, draftDate
                                         className="flex items-center justify-between py-2.5 px-3.5 rounded-xl bg-gray-50 border border-transparent"
                                     >
                                         <span className="text-sm text-gray-500">
-                                            {new Date(entry.date).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" })}
+                                            {formatClinicalDate(entry.date, { day: "2-digit" })}
                                         </span>
                                         <span className="text-sm font-bold text-gray-900">
                                             {entry.value} <span className="text-xs text-gray-400 font-normal">{definition.unit}</span>

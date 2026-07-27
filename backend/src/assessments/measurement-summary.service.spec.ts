@@ -60,8 +60,8 @@ describe('MeasurementSummaryService', () => {
             expect(weightCard.change).toEqual({
                 difference: -2,
                 trend: 'DOWN',
-                fromDate: new Date('2025-12-01'),
-                toDate: new Date('2026-01-01'),
+                fromDate: '2025-12-01',
+                toDate: '2026-01-01',
             });
 
             // Height was never measured at all -- everything must be null, not fabricated.
@@ -132,13 +132,18 @@ describe('MeasurementSummaryService', () => {
 
             expect(prisma.measurementRecord.findMany).toHaveBeenCalledWith(expect.objectContaining({
                 where: { definitionId: 'm_weight', assessment: { patientId: 'patient-1', status: 'COMPLETED' } },
-                orderBy: { assessment: { date: 'desc' } },
+                orderBy: [
+                    { assessment: { date: 'desc' } },
+                    { assessment: { completedAt: 'desc' } },
+                    { createdAt: 'desc' },
+                    { id: 'desc' },
+                ],
                 skip: 0,
                 take: 20,
             }));
             expect(history.data).toEqual([
-                { recordId: 'r2', assessmentId: 'a2', value: 70, date: new Date('2026-01-01') },
-                { recordId: 'r1', assessmentId: 'a1', value: 72, date: new Date('2025-12-01') },
+                { recordId: 'r2', assessmentId: 'a2', value: 70, date: '2026-01-01' },
+                { recordId: 'r1', assessmentId: 'a1', value: 72, date: '2025-12-01' },
             ]);
             expect(history.meta).toEqual({ page: 1, pageSize: 20, total: 2, totalPages: 1 });
         });

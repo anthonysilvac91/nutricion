@@ -2,6 +2,13 @@
 
 import { useMemo } from "react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
+import { formatClinicalDate } from "@/lib/clinicalDate";
+
+// Fecha clínica corta (d/m) para el eje X -- usa getters UTC, nunca la zona horaria local.
+function formatAxisTick(clinicalDate: string) {
+    const [, month, day] = clinicalDate.split("-").map(Number);
+    return `${day}/${month}`;
+}
 
 interface ChartPoint { date: string; value: number }
 
@@ -32,10 +39,7 @@ export function MeasurementChart({ records, unit, heightClass = "h-[250px]" }: P
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
                     <XAxis
                         dataKey="date"
-                        tickFormatter={(tick) => {
-                            const d = new Date(tick);
-                            return `${d.getDate()}/${d.getMonth() + 1}`;
-                        }}
+                        tickFormatter={formatAxisTick}
                         axisLine={false}
                         tickLine={false}
                         tick={{ fontSize: 12, fill: "#9ca3af" }}
@@ -49,10 +53,7 @@ export function MeasurementChart({ records, unit, heightClass = "h-[250px]" }: P
                     />
                     <Tooltip
                         contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                        labelFormatter={(label) => {
-                            const d = new Date(label);
-                            return d.toLocaleDateString();
-                        }}
+                        labelFormatter={(label) => formatClinicalDate(label)}
                         formatter={(value: any) => [`${value} ${unit}`, 'Valor']}
                     />
                     <Line

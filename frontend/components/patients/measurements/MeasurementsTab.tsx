@@ -8,6 +8,7 @@ import {
     measurementsService,
 } from "@/services/measurementsService";
 import { useMockMode } from "@/lib/mock-mode-context";
+import { formatClinicalDate } from "@/lib/clinicalDate";
 import { MeasureSummaryCard } from "@/components/patients/measurements/MeasureSummaryCard";
 import { MeasurementDrawer } from "@/components/patients/measurements/MeasurementDrawer";
 import { MeasurementSettingsModal } from "@/components/patients/measurements/MeasurementSettingsModal";
@@ -158,7 +159,7 @@ export function MeasurementsTab({ patientId }: Props) {
                         <div className="flex items-center gap-2 text-amber-800">
                             <ClipboardList className="w-4 h-4" />
                             <span className="text-xs font-bold">
-                                Evaluación del {new Date(activeDraft!.date).toLocaleDateString("es-CL", { day: "numeric", month: "short", year: "numeric" })} · BORRADOR · {activeDraft!.measurementCount} medición{activeDraft!.measurementCount !== 1 ? "es" : ""} registrada{activeDraft!.measurementCount !== 1 ? "s" : ""}
+                                Evaluación del {formatClinicalDate(activeDraft!.date)} · BORRADOR · {activeDraft!.measurementCount} medición{activeDraft!.measurementCount !== 1 ? "es" : ""} registrada{activeDraft!.measurementCount !== 1 ? "s" : ""}
                             </span>
                         </div>
                         <button
