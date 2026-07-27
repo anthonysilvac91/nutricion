@@ -1,12 +1,13 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { AssessmentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAssessmentDto, MeasurementRecordDto } from './dto/create-assessment.dto';
 import { CreateDraftDto } from './dto/create-draft.dto';
 import { UpsertMeasurementsDto } from './dto/upsert-measurements.dto';
 import { ContextResolverService } from './context-resolver.service';
 import { ClinicalCalculationEngineService, EngineResult } from './clinical-calculation-engine.service';
-import { AssessmentStatus } from '@prisma/client';
+
+type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
 
 @Injectable()
 export class AssessmentsService {
@@ -16,8 +17,8 @@ export class AssessmentsService {
         private readonly engine: ClinicalCalculationEngineService,
     ) { }
 
-    /** Shared payload validation for create() and upsertMeasurements() -- never duplicate these rules. */
-    private async validateMeasurementsPayload(measurements: MeasurementRecordDto[]): Promise<void> {
+    /** Pure shape validation -- no DB access, safe to call before opening a transaction. */
+    private validateMeasurementsShape(measurements: MeasurementRecordDto[]): void {
         if (!measurements || measurements.length === 0) {
             throw new BadRequestException('At least one measurement is required');
         }
@@ -33,24 +34,62 @@ export class AssessmentsService {
             throw new BadRequestException('Duplicate measurement definitions in the same assessment are not allowed');
         }
 
-        if (measurements.some(m => m.numericValue == null && !m.stringValue)) {
-            throw new BadRequestException('Each measurement requires a numericValue or stringValue');
-        }
+        for (const m of measurements) {
+            const hasNumeric = m.numericValue != null;
+            const hasString = !!m.stringValue;
 
-        const existingDefinitions = await this.prisma.measurementDefinition.findMany({
-            where: { id: { in: definitionIds } },
-            select: { id: true }
+            if (!hasNumeric && !hasString) {
+                throw new BadRequestException('Each measurement requires a numericValue or stringValue');
+            }
+            if (hasNumeric && hasString) {
+                throw new BadRequestException('A measurement cannot have both numericValue and stringValue');
+            }
+            if (hasNumeric && !Number.isFinite(m.numericValue)) {
+                throw new BadRequestException('numericValue must be a finite number (NaN/Infinity are not allowed)');
+            }
+        }
+    }
+
+    /** DB-backed catalog check -- accepts either the plain PrismaService or an interactive transaction's client, so it can run inside a lock. */
+    private async assertDefinitionsUsable(client: PrismaClientOrTx, measurements: MeasurementRecordDto[]): Promise<void> {
+        const definitionIds = measurements.map(m => m.definitionId);
+        const existingDefinitions = await client.measurementDefinition.findMany({
+            where: { id: { in: definitionIds }, isActive: true },
+            select: { id: true },
         });
 
         if (existingDefinitions.length !== definitionIds.length) {
             const existingIds = existingDefinitions.map(d => d.id);
             const missingIds = definitionIds.filter(id => !existingIds.includes(id));
-            throw new BadRequestException(`The following measurement definitions do not exist: ${missingIds.join(', ')}`);
+            throw new BadRequestException(`The following measurement definitions do not exist or are inactive: ${missingIds.join(', ')}`);
         }
     }
 
+    /**
+     * Takes a row-level PostgreSQL lock (SELECT ... FOR UPDATE) on the Assessment for the
+     * duration of the enclosing transaction, combining ownership + DRAFT-state validation in
+     * one atomic step. Any other upsert/remove/complete call for the same assessment blocks
+     * until this transaction commits or rolls back, then re-reads the committed state -- this
+     * is what actually prevents the "checked DRAFT, then someone else completed it" race.
+     */
+    private async lockDraftAssessment(tx: Prisma.TransactionClient, userId: string, patientId: string, assessmentId: string) {
+        const rows = await tx.$queryRaw<{ id: string; status: string }[]>`
+            SELECT a.id, a.status
+            FROM "Assessment" a
+            JOIN "Patient" p ON p.id = a."patientId"
+            WHERE a.id = ${assessmentId} AND a."patientId" = ${patientId} AND p."userId" = ${userId}
+            FOR UPDATE OF a
+        `;
+        const assessment = rows[0];
+        if (!assessment) throw new NotFoundException('Assessment not found');
+        if (assessment.status !== 'DRAFT') throw new ConflictException('Assessment is no longer a DRAFT');
+        return assessment;
+    }
+
+    // POST /patients/:id/assessments -- legacy one-shot creation, always COMPLETED, never a DRAFT.
     async create(userId: string, patientId: string, dto: CreateAssessmentDto) {
-        await this.validateMeasurementsPayload(dto.measurements);
+        this.validateMeasurementsShape(dto.measurements);
+        await this.assertDefinitionsUsable(this.prisma, dto.measurements);
 
         const patient = await this.prisma.patient.findFirst({
             where: { id: patientId, userId },
@@ -74,12 +113,13 @@ export class AssessmentsService {
 
         // 3. Persist the entire Assessment inside a transaction
         const newAssessment = await this.prisma.$transaction(async (tx) => {
-            // Create Assessment Entity
+            // Create Assessment Entity -- always COMPLETED; this endpoint never produces a DRAFT.
             const assessment = await tx.assessment.create({
                 data: {
                     patientId,
                     date: assessmentDate,
-                    status: dto.status || AssessmentStatus.DRAFT,
+                    status: AssessmentStatus.COMPLETED,
+                    completedAt: new Date(),
                     ageAtAssessmentMonths: context.ageAtAssessmentMonths,
                     populationGroup: context.populationGroup,
                     specialProfile: context.specialProfile,
@@ -156,17 +196,6 @@ export class AssessmentsService {
         return this.mapToUiResponse(assessment);
     }
 
-    private async verifyDraftOwnership(userId: string, patientId: string, assessmentId: string) {
-        const assessment = await this.prisma.assessment.findFirst({
-            where: { id: assessmentId, patientId, patient: { userId } },
-        });
-        if (!assessment) throw new NotFoundException('Assessment not found');
-        if (assessment.status !== 'DRAFT') {
-            throw new BadRequestException('Only a DRAFT assessment can be modified');
-        }
-        return assessment;
-    }
-
     async findAllByPatient(userId: string, patientId: string, status?: AssessmentStatus) {
         const patient = await this.prisma.patient.findFirst({
             where: { id: patientId, userId },
@@ -226,7 +255,7 @@ export class AssessmentsService {
             return this.findOneForPatient(userId, patientId, created.id);
         } catch (e) {
             if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-                // Otra request ya creó el DRAFT (carrera con el índice único parcial).
+                // Otra request ya creó el DRAFT (carrera con el índice único parcial de la BD).
                 const winner = await this.prisma.assessment.findFirstOrThrow({ where: { patientId, status: 'DRAFT' } });
                 return this.findOneForPatient(userId, patientId, winner.id);
             }
@@ -236,67 +265,82 @@ export class AssessmentsService {
 
     // PATCH /patients/:patientId/assessments/:assessmentId/measurements
     async upsertMeasurements(userId: string, patientId: string, assessmentId: string, dto: UpsertMeasurementsDto) {
-        await this.verifyDraftOwnership(userId, patientId, assessmentId);
-        await this.validateMeasurementsPayload(dto.measurements);
+        this.validateMeasurementsShape(dto.measurements);
 
-        await this.prisma.$transaction(
-            dto.measurements.map(m => this.prisma.measurementRecord.upsert({
-                where: { assessmentId_definitionId: { assessmentId, definitionId: m.definitionId } },
-                create: {
-                    assessmentId,
-                    definitionId: m.definitionId,
-                    numericValue: m.numericValue,
-                    stringValue: m.stringValue,
-                    metadataAsJson: m.metadataAsJson,
-                    measuredBy: m.measuredBy,
-                    deviceUsed: m.deviceUsed,
-                },
-                update: {
-                    numericValue: m.numericValue,
-                    stringValue: m.stringValue,
-                    metadataAsJson: m.metadataAsJson,
-                    measuredBy: m.measuredBy,
-                    deviceUsed: m.deviceUsed,
-                },
-            }))
-        );
+        return this.prisma.$transaction(async (tx) => {
+            await this.lockDraftAssessment(tx, userId, patientId, assessmentId);
+            await this.assertDefinitionsUsable(tx, dto.measurements);
 
-        return this.findOneForPatient(userId, patientId, assessmentId);
+            for (const m of dto.measurements) {
+                await tx.measurementRecord.upsert({
+                    where: { assessmentId_definitionId: { assessmentId, definitionId: m.definitionId } },
+                    create: {
+                        assessmentId,
+                        definitionId: m.definitionId,
+                        numericValue: m.numericValue,
+                        stringValue: m.stringValue,
+                        metadataAsJson: m.metadataAsJson,
+                        measuredBy: m.measuredBy,
+                        deviceUsed: m.deviceUsed,
+                    },
+                    update: {
+                        numericValue: m.numericValue,
+                        stringValue: m.stringValue,
+                        metadataAsJson: m.metadataAsJson,
+                        measuredBy: m.measuredBy,
+                        deviceUsed: m.deviceUsed,
+                    },
+                });
+            }
+
+            const assessment = await tx.assessment.findFirst({
+                where: { id: assessmentId },
+                include: { measurements: true, results: true },
+            });
+            return this.mapToUiResponse(assessment);
+        });
     }
 
     // DELETE /patients/:patientId/assessments/:assessmentId/measurements/:definitionId
     async removeMeasurement(userId: string, patientId: string, assessmentId: string, definitionId: string) {
-        await this.verifyDraftOwnership(userId, patientId, assessmentId);
+        return this.prisma.$transaction(async (tx) => {
+            await this.lockDraftAssessment(tx, userId, patientId, assessmentId);
 
-        const deleted = await this.prisma.measurementRecord.deleteMany({ where: { assessmentId, definitionId } });
-        if (deleted.count === 0) throw new NotFoundException('Measurement not found in this assessment');
+            const deleted = await tx.measurementRecord.deleteMany({ where: { assessmentId, definitionId } });
+            if (deleted.count === 0) throw new NotFoundException('Measurement not found in this assessment');
 
-        return this.findOneForPatient(userId, patientId, assessmentId);
+            const assessment = await tx.assessment.findFirst({
+                where: { id: assessmentId },
+                include: { measurements: true, results: true },
+            });
+            return this.mapToUiResponse(assessment);
+        });
     }
 
     // POST /patients/:patientId/assessments/:assessmentId/complete
     async complete(userId: string, patientId: string, assessmentId: string) {
-        const assessment = await this.prisma.assessment.findFirst({
-            where: { id: assessmentId, patientId, patient: { userId } },
-            include: { measurements: true },
-        });
-        if (!assessment) throw new NotFoundException('Assessment not found');
-        if (assessment.status !== 'DRAFT') throw new BadRequestException('Only a DRAFT assessment can be completed');
-        if (assessment.measurements.length === 0) {
-            throw new BadRequestException('At least one measurement is required to complete an assessment');
-        }
+        return this.prisma.$transaction(async (tx) => {
+            await this.lockDraftAssessment(tx, userId, patientId, assessmentId);
 
-        const patient = await this.prisma.patient.findFirstOrThrow({ where: { id: patientId } });
-        const context = this.contextResolver.resolveContext(patient, assessment.date);
+            const assessment = await tx.assessment.findFirst({
+                where: { id: assessmentId },
+                include: { measurements: true },
+            });
+            if (!assessment) throw new NotFoundException('Assessment not found');
+            if (assessment.measurements.length === 0) {
+                throw new BadRequestException('At least one measurement is required to complete an assessment');
+            }
 
-        const measurementDtos: MeasurementRecordDto[] = assessment.measurements.map(m => ({
-            definitionId: m.definitionId,
-            numericValue: m.numericValue ?? undefined,
-            stringValue: m.stringValue ?? undefined,
-        }));
-        const calculatedResults: EngineResult[] = this.engine.calculateAll(context, patient, measurementDtos);
+            const patient = await tx.patient.findFirstOrThrow({ where: { id: patientId } });
+            const context = this.contextResolver.resolveContext(patient, assessment.date);
 
-        await this.prisma.$transaction(async (tx) => {
+            const measurementDtos: MeasurementRecordDto[] = assessment.measurements.map(m => ({
+                definitionId: m.definitionId,
+                numericValue: m.numericValue ?? undefined,
+                stringValue: m.stringValue ?? undefined,
+            }));
+            const calculatedResults: EngineResult[] = this.engine.calculateAll(context, patient, measurementDtos);
+
             await tx.calculatedResult.deleteMany({ where: { assessmentId } });
 
             if (calculatedResults.length > 0) {
@@ -318,8 +362,12 @@ export class AssessmentsService {
                 });
             }
 
-            await tx.assessment.update({
-                where: { id: assessmentId },
+            // Defensive belt-and-suspenders: the FOR UPDATE lock already guarantees this can't
+            // affect 0 rows in practice, but the conditional WHERE + count check makes the
+            // invariant explicit and gives a concrete 409 path if that assumption is ever broken
+            // by a future refactor.
+            const updated = await tx.assessment.updateMany({
+                where: { id: assessmentId, status: 'DRAFT' },
                 data: {
                     status: 'COMPLETED',
                     completedAt: new Date(),
@@ -329,9 +377,16 @@ export class AssessmentsService {
                     clinicalProtocol: context.clinicalProtocol,
                 },
             });
-        });
+            if (updated.count === 0) {
+                throw new ConflictException('Assessment was already completed by another request');
+            }
 
-        return this.findOneForPatient(userId, patientId, assessmentId);
+            const final = await tx.assessment.findFirst({
+                where: { id: assessmentId },
+                include: { measurements: true, results: true },
+            });
+            return this.mapToUiResponse(final);
+        });
     }
 
     private mapToUiResponse(assessment: any) {

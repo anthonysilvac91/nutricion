@@ -304,6 +304,8 @@ model MeasurementRecord {
   measuredBy String?
   deviceUsed String?
 
+  createdAt DateTime @default(now())
+
   @@unique([assessmentId, definitionId])
 }
 

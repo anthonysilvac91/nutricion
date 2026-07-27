@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { X, Save } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -17,12 +17,18 @@ interface Props {
 }
 
 export function MeasurementQuickAddModal({ isOpen, onClose, visibleDefinitions, hasActiveDraft, draftDate, onSaveAll }: Props) {
-    const today = new Date().toISOString().split('T')[0];
-    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate.split('T')[0] : today);
+    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate.split('T')[0] : new Date().toISOString().split('T')[0]);
 
     // Contiene los valores numéricos ingresados { "m_weight": "80.5", ... }
     const [values, setValues] = useState<Record<string, string>>({});
     const [isSaving, setIsSaving] = useState(false);
+
+    // La fecha siempre refleja el DRAFT activo (si existe) -- nunca la decide el frontend.
+    // Se resincroniza cada vez que se abre el modal o cambia el borrador vigente.
+    useEffect(() => {
+        if (!isOpen) return;
+        setDate(hasActiveDraft && draftDate ? draftDate.split('T')[0] : new Date().toISOString().split('T')[0]);
+    }, [isOpen, hasActiveDraft, draftDate]);
 
     if (!isOpen || typeof document === "undefined") return null;
 
@@ -36,7 +42,6 @@ export function MeasurementQuickAddModal({ isOpen, onClose, visibleDefinitions, 
     const handleClear = () => {
         if (confirm("¿Estás seguro de que quieres limpiar todos los campos ingresados?")) {
             setValues({});
-            setDate(today);
         }
     };
 

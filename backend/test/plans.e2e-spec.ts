@@ -69,7 +69,6 @@ describe('Plans (e2e)', () => {
             .set('Authorization', `Bearer ${token}`)
             .send({
                 date: '2026-01-01T00:00:00.000Z',
-                status: 'COMPLETED',
                 measurements: [
                     { definitionId: 'm_weight', numericValue: 65 },
                     { definitionId: 'm_height', numericValue: 165 },

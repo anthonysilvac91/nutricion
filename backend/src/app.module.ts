@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, ValidationPipe } from '@nestjs/common';
+import { APP_PIPE } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import * as Joi from 'joi';
 import { AppController } from './app.controller';
@@ -37,6 +38,12 @@ import { FoodsModule } from './foods/foods.module';
   ],
   providers: [
     AppService,
+    // Registered here (not only in main.ts's bootstrap) so it's also active in e2e tests,
+    // which build the app via Test.createTestingModule and never call bootstrap().
+    {
+      provide: APP_PIPE,
+      useValue: new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+    },
   ],
 })
 export class AppModule { }

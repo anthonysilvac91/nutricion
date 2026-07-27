@@ -5,8 +5,12 @@ function buildPrismaMock() {
     return {
         patient: { findFirst: jest.fn() },
         measurementDefinition: { findMany: jest.fn(), findUnique: jest.fn() },
-        assessment: { findFirst: jest.fn(), findMany: jest.fn() },
+        assessment: { findFirst: jest.fn() },
         measurementRecord: { findMany: jest.fn(), count: jest.fn() },
+        // getSummary reads the ranked latest/previous values via a single window-function
+        // query instead of loading every COMPLETED assessment -- tests supply already-ranked
+        // rows here, exactly as PostgreSQL's ROW_NUMBER() would return them.
+        $queryRaw: jest.fn(),
     };
 }
 
@@ -38,18 +42,11 @@ describe('MeasurementSummaryService', () => {
                 updatedAt: new Date('2026-07-26'),
                 measurements: [{ id: 'rec-draft-weight', definitionId: 'm_weight', numericValue: 68, stringValue: null }],
             });
-            // Ordered desc by date, as Prisma's orderBy would return.
-            prisma.assessment.findMany.mockResolvedValue([
-                {
-                    id: 'assessment-jan',
-                    date: new Date('2026-01-01'),
-                    measurements: [{ id: 'rec-jan', definitionId: 'm_weight', numericValue: 70, stringValue: null }],
-                },
-                {
-                    id: 'assessment-dec',
-                    date: new Date('2025-12-01'),
-                    measurements: [{ id: 'rec-dec', definitionId: 'm_weight', numericValue: 72, stringValue: null }],
-                },
+            // Rows already ranked by the SQL window function: rn=1 is the most recent,
+            // rn=2 the one before it -- exactly the shape ROW_NUMBER() OVER (...) produces.
+            prisma.$queryRaw.mockResolvedValue([
+                { recordId: 'rec-jan', assessmentId: 'assessment-jan', definitionId: 'm_weight', numericValue: 70, stringValue: null, date: new Date('2026-01-01'), rn: 1n },
+                { recordId: 'rec-dec', assessmentId: 'assessment-dec', definitionId: 'm_weight', numericValue: 72, stringValue: null, date: new Date('2025-12-01'), rn: 2n },
             ]);
 
             const summary = await service.getSummary('user-1', 'patient-1');
@@ -79,8 +76,8 @@ describe('MeasurementSummaryService', () => {
             prisma.patient.findFirst.mockResolvedValue({ id: 'patient-1' });
             prisma.measurementDefinition.findMany.mockResolvedValue([{ id: 'm_weight', group: 'BASIC', name: 'Peso', unit: 'kg' }]);
             prisma.assessment.findFirst.mockResolvedValue(null);
-            prisma.assessment.findMany.mockResolvedValue([
-                { id: 'a1', date: new Date('2026-01-01'), measurements: [{ id: 'r1', definitionId: 'm_weight', numericValue: 70, stringValue: null }] },
+            prisma.$queryRaw.mockResolvedValue([
+                { recordId: 'r1', assessmentId: 'a1', definitionId: 'm_weight', numericValue: 70, stringValue: null, date: new Date('2026-01-01'), rn: 1n },
             ]);
 
             const summary = await service.getSummary('user-1', 'patient-1');
@@ -89,6 +86,24 @@ describe('MeasurementSummaryService', () => {
             expect(card.latestCompleted).toEqual(expect.objectContaining({ value: 70 }));
             expect(card.previousCompleted).toBeNull();
             expect(card.change).toBeNull();
+        });
+
+        it('only ever treats rn=1 as latest and rn=2 as previous, ignoring any further rank (defense in depth vs. the SQL WHERE rn<=2 clause)', async () => {
+            prisma.patient.findFirst.mockResolvedValue({ id: 'patient-1' });
+            prisma.measurementDefinition.findMany.mockResolvedValue([{ id: 'm_weight', group: 'BASIC', name: 'Peso', unit: 'kg' }]);
+            prisma.assessment.findFirst.mockResolvedValue(null);
+            prisma.$queryRaw.mockResolvedValue([
+                { recordId: 'r3', assessmentId: 'a3', definitionId: 'm_weight', numericValue: 74, stringValue: null, date: new Date('2026-02-01'), rn: 1n },
+                { recordId: 'r2', assessmentId: 'a2', definitionId: 'm_weight', numericValue: 72, stringValue: null, date: new Date('2026-01-01'), rn: 2n },
+                { recordId: 'r1', assessmentId: 'a1', definitionId: 'm_weight', numericValue: 70, stringValue: null, date: new Date('2025-12-01'), rn: 3n },
+            ]);
+
+            const summary = await service.getSummary('user-1', 'patient-1');
+            const card = summary.cards[0];
+            expect(card.latestCompleted).toEqual(expect.objectContaining({ value: 74, assessmentId: 'a3' }));
+            expect(card.previousCompleted).toEqual(expect.objectContaining({ value: 72, assessmentId: 'a2' }));
+            // The 3rd-ranked row must never surface anywhere in the response.
+            expect(JSON.stringify(summary)).not.toContain('a1');
         });
     });
 

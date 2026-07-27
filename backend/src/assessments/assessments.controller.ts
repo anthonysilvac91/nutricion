@@ -19,8 +19,10 @@ export class AssessmentsController {
         private readonly measurementSummary: MeasurementSummaryService,
     ) { }
 
-    // POST /patients/:id/assessments
-    @ApiOperation({ summary: 'Registrar nuevo Assessment (Evaluación Clínica)' })
+    // POST /patients/:id/assessments -- compatibilidad: crea una evaluación completa en un solo
+    // paso, siempre COMPLETED. Nunca crea un DRAFT -- para el flujo editable usar
+    // POST .../assessments/draft + PATCH .../measurements + POST .../complete.
+    @ApiOperation({ summary: 'Crear evaluación completa en un solo paso (compatibilidad, siempre COMPLETED)' })
     @UseGuards(SubscriptionWriteGuard)
     @Post('patients/:patientId/assessments')
     create(@Req() req: any, @Param('patientId') patientId: string, @Body() dto: CreateAssessmentDto) {

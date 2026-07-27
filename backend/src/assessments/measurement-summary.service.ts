@@ -10,6 +10,16 @@ export interface MeasurementValue {
     date: Date;
 }
 
+interface RankedMeasurementRow {
+    recordId: string;
+    assessmentId: string;
+    definitionId: string;
+    numericValue: number | null;
+    stringValue: string | null;
+    date: Date;
+    rn: bigint;
+}
+
 @Injectable()
 export class MeasurementSummaryService {
     constructor(private readonly prisma: PrismaService) { }
@@ -18,7 +28,7 @@ export class MeasurementSummaryService {
         const patient = await this.prisma.patient.findFirst({ where: { id: patientId, userId }, select: { id: true } });
         if (!patient) throw new NotFoundException('Patient not found');
 
-        const [definitions, draftAssessment, completedAssessments] = await Promise.all([
+        const [definitions, draftAssessment, ranked] = await Promise.all([
             this.prisma.measurementDefinition.findMany({
                 where: { isActive: true },
                 orderBy: [{ group: 'asc' }, { name: 'asc' }],
@@ -27,26 +37,43 @@ export class MeasurementSummaryService {
                 where: { patientId, status: 'DRAFT' },
                 include: { measurements: true },
             }),
-            this.prisma.assessment.findMany({
-                where: { patientId, status: 'COMPLETED' },
-                orderBy: { date: 'desc' },
-                include: { measurements: true },
-            }),
+            // Solo trae, por tipo de medición, las 2 filas más recientes entre TODAS las
+            // evaluaciones COMPLETED del paciente -- nunca carga el historial completo,
+            // sin importar cuántas evaluaciones tenga acumuladas.
+            this.prisma.$queryRaw<RankedMeasurementRow[]>`
+                SELECT * FROM (
+                    SELECT
+                        mr.id AS "recordId",
+                        mr."assessmentId" AS "assessmentId",
+                        mr."definitionId" AS "definitionId",
+                        mr."numericValue" AS "numericValue",
+                        mr."stringValue" AS "stringValue",
+                        a.date AS "date",
+                        ROW_NUMBER() OVER (
+                            PARTITION BY mr."definitionId"
+                            ORDER BY a.date DESC, mr."createdAt" DESC
+                        ) AS rn
+                    FROM "MeasurementRecord" mr
+                    JOIN "Assessment" a ON a.id = mr."assessmentId"
+                    WHERE a."patientId" = ${patientId}
+                        AND a.status = 'COMPLETED'
+                        AND (mr."numericValue" IS NOT NULL OR mr."stringValue" IS NOT NULL)
+                ) ranked
+                WHERE rn <= 2
+            `,
         ]);
 
         const latestByDefinition = new Map<string, MeasurementValue>();
         const previousByDefinition = new Map<string, MeasurementValue>();
 
-        for (const assessment of completedAssessments) {
-            for (const m of assessment.measurements) {
-                if (m.numericValue == null && !m.stringValue) continue;
-                const value = m.numericValue ?? m.stringValue!;
-                if (!latestByDefinition.has(m.definitionId)) {
-                    latestByDefinition.set(m.definitionId, { assessmentId: assessment.id, recordId: m.id, value, date: assessment.date });
-                } else if (!previousByDefinition.has(m.definitionId)) {
-                    previousByDefinition.set(m.definitionId, { assessmentId: assessment.id, recordId: m.id, value, date: assessment.date });
-                }
-            }
+        for (const row of ranked) {
+            const value = row.numericValue ?? row.stringValue!;
+            const entry: MeasurementValue = { assessmentId: row.assessmentId, recordId: row.recordId, value, date: row.date };
+            const rank = Number(row.rn);
+            if (rank === 1) latestByDefinition.set(row.definitionId, entry);
+            else if (rank === 2) previousByDefinition.set(row.definitionId, entry);
+            // Any rank beyond 2 is ignored -- the SQL already filters with WHERE rn <= 2, this
+            // is defense in depth so a bug in that clause can never leak a 3rd value here.
         }
 
         const draftByDefinition = new Map<string, MeasurementValue>();

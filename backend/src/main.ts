@@ -1,4 +1,3 @@
-import { ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
@@ -17,14 +16,8 @@ async function bootstrap() {
   }); // Enable CORS for frontend access
   app.use(helmet());
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
-
+  // ValidationPipe is registered as an APP_PIPE in AppModule so it's active both here and
+  // in e2e tests (which build the app via Test.createTestingModule, bypassing bootstrap()).
   app.useGlobalFilters(new AllExceptionsFilter());
 
   // Swagger

@@ -75,7 +75,6 @@ describe('Assessments (e2e)', () => {
             .set('Authorization', `Bearer ${token}`)
             .send({
                 date: '2026-03-01T10:00:00.000Z',
-                status: 'COMPLETED',
                 measurements: [
                     { definitionId: 'm_weight', numericValue: 80 },
                     { definitionId: 'm_height', numericValue: 180 }
@@ -84,6 +83,7 @@ describe('Assessments (e2e)', () => {
             .expect(201);
 
         expect(res.body.status).toBe('COMPLETED');
+        expect(res.body.completedAt).toBeDefined();
         expect(res.body.measurements).toBeDefined();
         expect(res.body.measurements.length).toBe(2);
 
@@ -95,6 +95,18 @@ describe('Assessments (e2e)', () => {
         expect(bmiResult.status).toBe('CALCULATED');
 
         assessmentId = res.body.id;
+    });
+
+    it('POST /patients/:id/assessments - the legacy endpoint no longer accepts a status field (always COMPLETED)', async () => {
+        await request(app.getHttpServer())
+            .post(`/patients/${patientId}/assessments`)
+            .set('Authorization', `Bearer ${token}`)
+            .send({
+                date: '2026-03-01T10:00:00.000Z',
+                status: 'DRAFT',
+                measurements: [{ definitionId: 'm_weight', numericValue: 80 }],
+            })
+            .expect(400);
     });
 
     it('GET /assessments/:id - returns an assessment for its owner', async () => {
@@ -119,7 +131,6 @@ describe('Assessments (e2e)', () => {
             .set('Authorization', `Bearer ${token}`)
             .send({
                 date: '2026-03-01T10:00:00.000Z',
-                status: 'COMPLETED',
                 measurements: [
                     { definitionId: 'm_weight', numericValue: 80 },
                     { definitionId: 'm_height', numericValue: 180 }
@@ -141,7 +152,6 @@ describe('Assessments (e2e)', () => {
             .set('Authorization', `Bearer ${token}`)
             .send({
                 date: '2026-03-02T10:00:00.000Z',
-                status: 'COMPLETED',
                 measurements: [
                     { definitionId: 'm_weight', numericValue: 80 } // missing height
                 ]

@@ -18,8 +18,7 @@ interface Props {
 }
 
 export function MeasurementDrawer({ definition, draft, hasActiveDraft, draftDate, onClose, onSaveDraftValue, onDeleteDraftValue, loadHistory }: Props) {
-    const today = new Date().toISOString().split("T")[0];
-    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate.split("T")[0] : today);
+    const [date, setDate] = useState(hasActiveDraft && draftDate ? draftDate.split("T")[0] : new Date().toISOString().split("T")[0]);
     const [value, setValue] = useState(draft != null ? String(draft.value) : "");
     const [saving, setSaving] = useState(false);
     const [deleting, setDeleting] = useState(false);
@@ -29,6 +28,12 @@ export function MeasurementDrawer({ definition, draft, hasActiveDraft, draftDate
     const [page, setPage] = useState(1);
 
     const Icon = getMeasurementIcon(definition.id);
+
+    // La fecha siempre proviene del DRAFT activo (si existe) -- nunca la decide/edita el
+    // frontend por su cuenta; se resincroniza si el borrador cambia mientras el drawer está abierto.
+    useEffect(() => {
+        setDate(hasActiveDraft && draftDate ? draftDate.split("T")[0] : new Date().toISOString().split("T")[0]);
+    }, [hasActiveDraft, draftDate]);
 
     useEffect(() => {
         setHistoryLoading(true);

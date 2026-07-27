@@ -20,15 +20,19 @@ function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+/**
+ * Solo representa dirección matemática (el backend nunca decide si subir o
+ * bajar es clínicamente bueno o malo, así que el frontend tampoco lo pinta
+ * como tal) -- mismo color neutral para UP y DOWN, solo cambia el ícono.
+ */
 function ChangeBadge({ change }: { change: MeasurementChangeDto }) {
-    const isUp = change.trend === "UP";
-    const isDown = change.trend === "DOWN";
+    const isFlat = change.trend === "FLAT";
     return (
         <div className={cn(
             "inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded-md mt-1",
-            isUp ? "bg-red-50 text-red-500" : isDown ? "bg-green-50 text-green-600" : "bg-gray-50 text-gray-400"
+            isFlat ? "bg-gray-50 text-gray-400" : "bg-blue-50 text-blue-600"
         )}>
-            {isUp ? <TrendingUp className="w-2.5 h-2.5 mr-0.5" /> : isDown ? <TrendingDown className="w-2.5 h-2.5 mr-0.5" /> : <Minus className="w-2.5 h-2.5 mr-0.5" />}
+            {change.trend === "UP" ? <TrendingUp className="w-2.5 h-2.5 mr-0.5" /> : change.trend === "DOWN" ? <TrendingDown className="w-2.5 h-2.5 mr-0.5" /> : <Minus className="w-2.5 h-2.5 mr-0.5" />}
             {change.difference > 0 ? "+" : ""}{change.difference}
         </div>
     );

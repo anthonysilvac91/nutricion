@@ -255,6 +255,7 @@ export function MeasurementsTab({ patientId }: Props) {
             {/* Measurement Drawer */}
             {activeMeasurementId && activeDef && typeof document !== "undefined" && createPortal(
                 <MeasurementDrawer
+                    key={activeMeasurementId}
                     definition={activeDef}
                     draft={activeCard?.draft ?? null}
                     hasActiveDraft={hasActiveDraft}
