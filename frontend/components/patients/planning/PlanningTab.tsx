@@ -44,6 +44,15 @@ interface PendingInputs {
     waterSourceId?: string;
 }
 
+interface PlanConfig {
+    targetWeightKg?: number;
+    bmrFormulaId?: string;
+    pal?: number;
+    macroPercents?: { PROTEIN?: number; CARBS?: number; FAT?: number };
+    fiberSourceId?: string;
+    waterSourceId?: string;
+}
+
 // Para NutritionalPlan.date/finalizedAt (instantes reales, no fechas clínicas) -- la hora local
 // del visor es lo correcto aquí, a diferencia de Assessment.date (ver formatClinicalDate).
 function formatDate(iso: string) {
@@ -123,15 +132,6 @@ function NewPlanPicker({ patientId, variant, disabled, onCreated }: NewPlanPicke
     );
 }
 
-function seedFromCalculationResults(results: Record<string, any> | undefined) {
-    return {
-        patientValues: { targetWeightKg: results?.TARGET_WEIGHT_KG?.numericValue } as Partial<PatientValuesData>,
-        energy: { bmrFormulaId: results?.BMR?.formulaUsed, pal: results?.TDEE?.metadataAsJson?.palValue } as Partial<EnergyData>,
-        macros: { proteinPct: results?.PROTEIN_G?.metadataAsJson?.percent, lipidPct: results?.FAT_G?.metadataAsJson?.percent } as Partial<MacrosData>,
-        micros: { fiberSourceId: results?.FIBER_G?.formulaUsed, waterSourceId: results?.WATER_ML?.formulaUsed } as Partial<MicrosData>,
-    };
-}
-
 interface Props { patientId: string }
 
 export function PlanningTab({ patientId }: Props) {
@@ -149,9 +149,11 @@ export function PlanningTab({ patientId }: Props) {
 
     const selectedPlan = plans.find(p => p.id === selectedId) ?? null;
     const isReadOnly   = selectedPlan?.status === "FINALIZED";
-    const isDraft      = selectedPlan?.status === "DRAFT";
+    const isDraft       = selectedPlan?.status === "DRAFT";
 
-    const seeds = seedFromCalculationResults(plan?.calculationResults);
+    // Config siempre viene poblada desde el backend (incluso en un plan recién creado) --
+    // el frontend nunca reinventa un default clínico local.
+    const config: PlanConfig = plan?.config ?? {};
 
     const loadPlans = useCallback(async () => {
         try {
@@ -208,20 +210,18 @@ export function PlanningTab({ patientId }: Props) {
 
     const buildRecalculatePayload = () => {
         const pi = pendingInputs.current;
-        const proteinPct = pi.proteinPct ?? seeds.macros.proteinPct ?? 15;
-        const lipidPct = pi.lipidPct ?? seeds.macros.lipidPct ?? 28;
         return {
-            bmrFormulaId: pi.bmrFormulaId ?? seeds.energy.bmrFormulaId ?? context.availableFormulas?.bmr?.[0]?.id ?? "",
-            pal: pi.pal ?? seeds.energy.pal ?? context.availableFormulas?.palOptions?.[0]?.pal ?? 1.2,
-            targetWeightKg: pi.targetWeightKg ?? seeds.patientValues.targetWeightKg,
+            bmrFormulaId: pi.bmrFormulaId ?? config.bmrFormulaId ?? context.availableFormulas?.bmr?.[0]?.id ?? "",
+            pal: pi.pal ?? config.pal ?? context.availableFormulas?.palOptions?.[0]?.pal ?? 0,
+            targetWeightKg: pi.targetWeightKg ?? config.targetWeightKg,
             macroMethod: "PERCENT" as const,
             macroPercents: {
-                PROTEIN: proteinPct,
-                FAT: lipidPct,
-                CARBS: 100 - proteinPct - lipidPct,
+                PROTEIN: pi.proteinPct ?? config.macroPercents?.PROTEIN ?? 0,
+                FAT: pi.lipidPct ?? config.macroPercents?.FAT ?? 0,
+                CARBS: pi.carbPct ?? config.macroPercents?.CARBS ?? 0,
             },
-            fiberSourceId: pi.fiberSourceId ?? seeds.micros.fiberSourceId ?? context.availableFormulas?.fiberSources?.[0]?.id ?? "",
-            waterSourceId: pi.waterSourceId ?? seeds.micros.waterSourceId ?? context.availableFormulas?.waterSources?.[0]?.id ?? "",
+            fiberSourceId: pi.fiberSourceId ?? config.fiberSourceId ?? context.availableFormulas?.fiberSources?.[0]?.id ?? "",
+            waterSourceId: pi.waterSourceId ?? config.waterSourceId ?? context.availableFormulas?.waterSources?.[0]?.id ?? "",
         };
     };
 
@@ -304,8 +304,9 @@ export function PlanningTab({ patientId }: Props) {
                                         <Save className="h-3.5 w-3.5" />
                                         {saving ? "Guardando..." : "Guardar borrador"}
                                     </button>
-                                    <button type="button" onClick={handleFinalize} disabled={saving}
-                                        className="flex items-center gap-1.5 h-8 px-4 bg-[#1DBF73] text-white rounded-full text-xs font-bold shadow-sm hover:bg-[#18a863] transition-colors disabled:opacity-50">
+                                    <button type="button" onClick={handleFinalize} disabled={saving || !plan.canFinalize}
+                                        title={!plan.canFinalize ? "Hay datos faltantes o inválidos -- revisa los avisos abajo" : undefined}
+                                        className="flex items-center gap-1.5 h-8 px-4 bg-[#1DBF73] text-white rounded-full text-xs font-bold shadow-sm hover:bg-[#18a863] transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                                         <CheckCircle className="h-3.5 w-3.5" />
                                         Finalizar
                                     </button>
@@ -364,13 +365,23 @@ export function PlanningTab({ patientId }: Props) {
                         </div>
                     )}
 
+                    {isDraft && plan.finalizationBlockers?.length > 0 && (
+                        <div className="flex-none mb-3 flex flex-col gap-1.5">
+                            {plan.finalizationBlockers.map((blocker: any, i: number) => (
+                                <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 text-red-700 text-xs font-medium">
+                                    <ClipboardList className="h-3.5 w-3.5 shrink-0" /> {blocker.message}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
                     <div className="flex-1 min-h-0 overflow-y-auto">
                         {activeSection === "patient_values" && (
                             <PatientValuesSection
                                 key={`pv-${selectedId}`}
                                 context={context}
-                                results={plan.calculationResults}
-                                defaultData={seeds.patientValues}
+                                results={plan.results}
+                                defaultData={{ targetWeightKg: config.targetWeightKg }}
                                 onChange={d => handleSectionChange(d)}
                                 readOnly={isReadOnly}
                             />
@@ -379,8 +390,8 @@ export function PlanningTab({ patientId }: Props) {
                             <EnergySection
                                 key={`en-${selectedId}`}
                                 context={context}
-                                results={plan.calculationResults}
-                                defaultData={seeds.energy}
+                                results={plan.results}
+                                defaultData={{ bmrFormulaId: config.bmrFormulaId, pal: config.pal }}
                                 onChange={d => handleSectionChange(d)}
                                 readOnly={isReadOnly}
                             />
@@ -388,8 +399,8 @@ export function PlanningTab({ patientId }: Props) {
                         {activeSection === "macros" && (
                             <MacrosSection
                                 key={`ma-${selectedId}`}
-                                results={plan.calculationResults}
-                                defaultData={seeds.macros}
+                                results={plan.results?.macros}
+                                defaultData={{ proteinPct: config.macroPercents?.PROTEIN, lipidPct: config.macroPercents?.FAT, carbPct: config.macroPercents?.CARBS }}
                                 onChange={d => handleSectionChange(d)}
                                 readOnly={isReadOnly}
                             />
@@ -397,9 +408,9 @@ export function PlanningTab({ patientId }: Props) {
                         {activeSection === "micros" && (
                             <MicrosSection
                                 key={`mi-${selectedId}`}
-                                results={plan.calculationResults}
+                                results={plan.results}
                                 availableFormulas={context.availableFormulas}
-                                defaultData={seeds.micros}
+                                defaultData={{ fiberSourceId: config.fiberSourceId, waterSourceId: config.waterSourceId }}
                                 onChange={d => handleSectionChange(d)}
                                 readOnly={isReadOnly}
                             />

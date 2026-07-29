@@ -11,7 +11,7 @@ export interface PatientValuesData {
 interface PlanningContext {
     weightKg: number | null;
     fatPercentMeasured: number | null;
-    calculatedResults: { BMI?: StrategyResult; BODY_FAT_PERCENTAGE?: StrategyResult };
+    calculatedResults: { BODY_FAT_PERCENTAGE?: StrategyResult };
     availableFormulas?: { bmi?: { id: string; label: string; reference: { citation: string } }[] };
 }
 
@@ -56,15 +56,11 @@ export function PatientValuesSection({ context, results, defaultData, onChange, 
         defaultData?.targetWeightKg != null ? String(defaultData.targetWeightKg) : ""
     );
 
-    const bmiActual = context.calculatedResults?.BMI;
     const fatActual = context.calculatedResults?.BODY_FAT_PERCENTAGE;
-    const bmiObjetivo = results?.BMI;
-
-    const weightDiff = (() => {
-        const target = parseFloat(targetWeightKg);
-        if (isNaN(target) || context.weightKg == null) return null;
-        return parseFloat((target - context.weightKg).toFixed(1));
-    })();
+    const bmiActual = results?.currentBmi;
+    const bmiObjetivo = results?.targetBmi;
+    const weightDiffResult = results?.weightDifferenceKg;
+    const weightDiff = weightDiffResult?.status === "CALCULATED" ? weightDiffResult.numericValue ?? null : null;
 
     useEffect(() => {
         const parsed = parseFloat(targetWeightKg);
@@ -155,7 +151,7 @@ export function PatientValuesSection({ context, results, defaultData, onChange, 
                             </td>
                             <td className="pl-4 pr-6 py-4">
                                 <span className="text-[11px] text-gray-500 leading-snug">
-                                    {context.availableFormulas?.bmi?.[0]?.reference?.citation ?? "—"}
+                                    {bmiObjetivo?.reference?.citation ?? context.availableFormulas?.bmi?.[0]?.reference?.citation ?? "—"}
                                 </span>
                             </td>
                         </tr>

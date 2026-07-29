@@ -2,19 +2,41 @@
 
 import { useState, useEffect } from "react";
 import { Droplets, Wheat, Dumbbell } from "lucide-react";
-import { StatusBadge, formatResultValue, StrategyResult } from "./ResultBadge";
-
 export interface MacrosData {
     proteinPct: number;
     lipidPct: number;
     carbPct: number;
 }
 
+interface MacroResult {
+    percentage: number | null;
+    grams: number | null;
+    gramsPerKg: number | null;
+    status: "CALCULATED" | "MISSING_DATA" | "NOT_APPLICABLE" | "PENDING_RULE";
+}
+
 interface Props {
-    results?: Record<string, StrategyResult>;
+    results?: { protein?: MacroResult; lipids?: MacroResult; carbohydrates?: MacroResult };
     defaultData?: Partial<MacrosData>;
     onChange?: (data: MacrosData) => void;
     readOnly?: boolean;
+}
+
+function formatGrams(result?: MacroResult) {
+    if (!result || result.status !== "CALCULATED" || result.grams == null) return "—";
+    return `${result.grams} g`;
+}
+
+const STATUS_LABELS: Record<string, { label: string; bg: string; color: string }> = {
+    MISSING_DATA: { label: "Dato faltante", bg: "bg-gray-100", color: "text-gray-500" },
+    NOT_APPLICABLE: { label: "No aplicable", bg: "bg-gray-100", color: "text-gray-500" },
+    PENDING_RULE: { label: "Pendiente de aprobación", bg: "bg-amber-100", color: "text-amber-700" },
+};
+
+function MacroStatusBadge({ result }: { result?: MacroResult }) {
+    if (!result || result.status === "CALCULATED") return null;
+    const cfg = STATUS_LABELS[result.status] ?? { label: result.status, bg: "bg-gray-100", color: "text-gray-500" };
+    return <span className={`inline-flex text-[10px] font-bold px-1.5 py-0.5 rounded-full w-fit ${cfg.bg} ${cfg.color}`}>{cfg.label}</span>;
 }
 
 interface SliderProps { value: number; onChange: (v: number) => void; disabled?: boolean; color: string; max: number }
@@ -29,9 +51,12 @@ function MacroSlider({ value, onChange, disabled = false, color, max }: SliderPr
 }
 
 export function MacrosSection({ results, defaultData, onChange, readOnly = false }: Props) {
-    const [lipidPct, setLipidPct] = useState(defaultData?.lipidPct ?? 28);
-    const [proteinPct, setProteinPct] = useState(defaultData?.proteinPct ?? 15);
-    const carbPct = Math.max(0, 100 - lipidPct - proteinPct);
+    // Los 3 sliders son independientes -- ninguno se auto-deriva de los otros. Si no suman 100%,
+    // el backend lo refleja como el blocker INVALID_MACRO_TOTAL al intentar finalizar; el frontend
+    // no valida ni completa el porcentaje faltante por su cuenta.
+    const [lipidPct, setLipidPct] = useState(defaultData?.lipidPct ?? 0);
+    const [proteinPct, setProteinPct] = useState(defaultData?.proteinPct ?? 0);
+    const [carbPct, setCarbPct] = useState(defaultData?.carbPct ?? 0);
 
     useEffect(() => {
         onChange?.({ lipidPct, proteinPct, carbPct });
@@ -39,9 +64,9 @@ export function MacrosSection({ results, defaultData, onChange, readOnly = false
     }, [lipidPct, proteinPct, carbPct]);
 
     const rows = [
-        { key: "lipid", pct: lipidPct, color: "#EAB308", icon: <Droplets className="w-3.5 h-3.5" />, iconBg: "bg-yellow-50 text-yellow-500", result: results?.FAT_G, onSlide: (v: number) => setLipidPct(Math.min(v, 95 - proteinPct)) },
-        { key: "carb", pct: carbPct, color: "#F97316", icon: <Wheat className="w-3.5 h-3.5" />, iconBg: "bg-orange-50 text-orange-400", result: results?.CARBS_G, disabled: true, onSlide: () => {} },
-        { key: "protein", pct: proteinPct, color: "#3B82F6", icon: <Dumbbell className="w-3.5 h-3.5" />, iconBg: "bg-blue-50 text-blue-400", result: results?.PROTEIN_G, onSlide: (v: number) => setProteinPct(Math.min(v, 95 - lipidPct)) },
+        { key: "lipid", pct: lipidPct, color: "#EAB308", icon: <Droplets className="w-3.5 h-3.5" />, iconBg: "bg-yellow-50 text-yellow-500", result: results?.lipids, onSlide: setLipidPct },
+        { key: "carb", pct: carbPct, color: "#F97316", icon: <Wheat className="w-3.5 h-3.5" />, iconBg: "bg-orange-50 text-orange-400", result: results?.carbohydrates, onSlide: setCarbPct },
+        { key: "protein", pct: proteinPct, color: "#3B82F6", icon: <Dumbbell className="w-3.5 h-3.5" />, iconBg: "bg-blue-50 text-blue-400", result: results?.protein, onSlide: setProteinPct },
     ];
 
     return (
@@ -71,13 +96,13 @@ export function MacrosSection({ results, defaultData, onChange, readOnly = false
                                 <td className="px-4 py-4"><span className="text-xs text-gray-400">Porcentaje del GET</span></td>
                                 <td className="px-4 py-4">
                                     <div className="flex items-center gap-3">
-                                        <span className={`text-xs font-bold w-8 text-right ${row.disabled ? "text-gray-400" : "text-gray-700"}`}>{row.pct} %</span>
-                                        <MacroSlider value={row.pct} onChange={row.onSlide} disabled={readOnly || row.disabled} color={row.color} max={100} />
+                                        <span className="text-xs font-bold w-8 text-right text-gray-700">{row.pct} %</span>
+                                        <MacroSlider value={row.pct} onChange={row.onSlide} disabled={readOnly} color={row.color} max={100} />
                                     </div>
                                 </td>
-                                <td className="px-4 py-4"><span className="text-xs font-semibold text-gray-800">{formatResultValue(row.result, "g")}</span></td>
-                                <td className="px-4 py-4"><span className="text-xs font-semibold text-gray-800">{row.result?.metadataAsJson?.gPerKg != null ? `${row.result.metadataAsJson.gPerKg} g/kg` : "—"}</span></td>
-                                <td className="pl-4 pr-6 py-4"><StatusBadge result={row.result} /></td>
+                                <td className="px-4 py-4"><span className="text-xs font-semibold text-gray-800">{formatGrams(row.result)}</span></td>
+                                <td className="px-4 py-4"><span className="text-xs font-semibold text-gray-800">{row.result?.gramsPerKg != null ? `${row.result.gramsPerKg} g/kg` : "—"}</span></td>
+                                <td className="pl-4 pr-6 py-4"><MacroStatusBadge result={row.result} /></td>
                             </tr>
                         ))}
                     </tbody>

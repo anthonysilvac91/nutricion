@@ -39,6 +39,7 @@ function baseSnapshot(overrides: Partial<AssessmentSnapshot> = {}): AssessmentSn
         populationGroup: 'ADULT',
         sex: 'FEMALE',
         ageYears: 32,
+        activityLevel: 'MODERATE',
         measurementValues: { m_weight: 65, m_height: 165 },
         ...overrides,
     };
@@ -86,11 +87,23 @@ describe('PlanCalculationService', () => {
         }
     });
 
-    it('BMI reflects the plan target weight, not the assessment actual weight', () => {
-        const actualBmi = service.calculate(baseSnapshot(), basePlanInputs({ targetWeightKg: 65 })).BMI.numericValue;
-        const targetBmi = service.calculate(baseSnapshot(), basePlanInputs({ targetWeightKg: 60 })).BMI.numericValue;
-        expect(targetBmi).not.toBe(actualBmi);
-        expect(targetBmi).toBeCloseTo(60 / (1.65 * 1.65), 1);
+    it('CURRENT_BMI always reflects the real weight; TARGET_BMI reflects the plan target weight', () => {
+        const results = service.calculate(baseSnapshot(), basePlanInputs({ targetWeightKg: 60 }));
+        expect(results.CURRENT_BMI.numericValue).toBeCloseTo(65 / (1.65 * 1.65), 1);
+        expect(results.TARGET_BMI.numericValue).toBeCloseTo(60 / (1.65 * 1.65), 1);
+        expect(results.TARGET_BMI.numericValue).not.toBe(results.CURRENT_BMI.numericValue);
+        // Same underlying strategy/formula reused for both -- no duplicate formula.
+        expect(results.CURRENT_BMI.formulaUsed).toBe('BMI_ADULT_V1');
+        expect(results.TARGET_BMI.formulaUsed).toBe('BMI_ADULT_V1');
+    });
+
+    it('WEIGHT_DIFFERENCE_KG is the plain target-minus-actual delta, MISSING_DATA when either is absent', () => {
+        const results = service.calculate(baseSnapshot(), basePlanInputs({ targetWeightKg: 60 }));
+        expect(results.WEIGHT_DIFFERENCE_KG.status).toBe(ResultStatus.CALCULATED);
+        expect(results.WEIGHT_DIFFERENCE_KG.numericValue).toBeCloseTo(-5, 2);
+
+        const noWeight = service.calculate(baseSnapshot({ measurementValues: { m_height: 165 } }), basePlanInputs({ targetWeightKg: 60 }));
+        expect(noWeight.WEIGHT_DIFFERENCE_KG.status).toBe(ResultStatus.MISSING_DATA);
     });
 
     it('respects targetKcalOverride instead of the computed TDEE for macro grams', () => {
@@ -116,5 +129,67 @@ describe('PlanCalculationService', () => {
 
     it('throws when an unknown or out-of-phase formula id is requested', () => {
         expect(() => service.calculate(baseSnapshot(), basePlanInputs({ bmrFormulaId: 'BMI_ADULT_V1' }))).toThrow();
+    });
+
+    describe('evaluateFinalizationReadiness', () => {
+        it('canFinalize is true when the snapshot, config and results are all complete/valid', () => {
+            const snapshot = baseSnapshot();
+            const config = basePlanInputs();
+            const results = service.calculate(snapshot, config);
+            const readiness = service.evaluateFinalizationReadiness(snapshot, config, results);
+            expect(readiness).toEqual({ canFinalize: true, finalizationBlockers: [] });
+        });
+
+        it('flags MISSING_WEIGHT and MISSING_HEIGHT when the assessment lacks them', () => {
+            const snapshot = baseSnapshot({ measurementValues: {} });
+            const config = basePlanInputs();
+            const results = service.calculate(snapshot, config);
+            const readiness = service.evaluateFinalizationReadiness(snapshot, config, results);
+            expect(readiness.canFinalize).toBe(false);
+            const codes = readiness.finalizationBlockers.map(b => b.code);
+            expect(codes).toContain('MISSING_WEIGHT');
+            expect(codes).toContain('MISSING_HEIGHT');
+        });
+
+        it('flags INVALID_MACRO_TOTAL when the percentages do not sum to 100', () => {
+            const snapshot = baseSnapshot();
+            const config = basePlanInputs({ macroPercents: { PROTEIN: 15, CARBS: 55, FAT: 20 } });
+            const results = service.calculate(snapshot, config);
+            const readiness = service.evaluateFinalizationReadiness(snapshot, config, results);
+            expect(readiness.canFinalize).toBe(false);
+            expect(readiness.finalizationBlockers.map(b => b.code)).toContain('INVALID_MACRO_TOTAL');
+        });
+
+        it('flags METRIC_MISSING_DATA when a chosen formula cannot compute (Katch-McArdle without body fat %)', () => {
+            const snapshot = baseSnapshot();
+            const config = basePlanInputs({ bmrFormulaId: 'BMR_KATCH_MCARDLE_V1' });
+            const results = service.calculate(snapshot, config);
+            const readiness = service.evaluateFinalizationReadiness(snapshot, config, results);
+            expect(readiness.canFinalize).toBe(false);
+            expect(readiness.finalizationBlockers.map(b => b.code)).toContain('METRIC_MISSING_DATA');
+        });
+
+        it('flags MISSING_BMR_FORMULA/MISSING_FIBER_SOURCE/MISSING_WATER_SOURCE when config is empty', () => {
+            const snapshot = baseSnapshot();
+            const readiness = service.evaluateFinalizationReadiness(snapshot, {}, {});
+            expect(readiness.canFinalize).toBe(false);
+            const codes = readiness.finalizationBlockers.map(b => b.code);
+            expect(codes).toContain('MISSING_BMR_FORMULA');
+            expect(codes).toContain('MISSING_FIBER_SOURCE');
+            expect(codes).toContain('MISSING_WATER_SOURCE');
+        });
+    });
+
+    describe('describeCatalogChoice', () => {
+        it('returns id/version/reference for a known strategy id', () => {
+            const described = service.describeCatalogChoice('BMR_HARRIS_BENEDICT_V1');
+            expect(described).toEqual(expect.objectContaining({ id: 'BMR_HARRIS_BENEDICT_V1', version: 'v1.0.0' }));
+            expect(described?.reference).toBeTruthy();
+        });
+
+        it('returns null for an unknown id instead of throwing', () => {
+            expect(service.describeCatalogChoice('NOT_A_REAL_ID')).toBeNull();
+            expect(service.describeCatalogChoice(undefined)).toBeNull();
+        });
     });
 });

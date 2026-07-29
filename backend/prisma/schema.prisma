@@ -135,6 +135,12 @@ model NutritionalPlan {
   calculationResults Json
   engineVersion      String
 
+  // Última configuración enviada por la nutricionista (bmrFormulaId, pal,
+  // targetWeightKg, macroMethod, macroPercents, fiberSourceId, waterSourceId).
+  // Nullable porque es un campo aditivo -- filas previas a esta migración no
+  // lo tendrán; el mapper de lectura hace `config ?? {}`.
+  config Json?
+
   // Legacy: se mantienen para no romper lecturas antiguas del frontend.
   // El backend ya no acepta contenido arbitrario del cliente aquí; se siguen
   // poblando como espejo de calculationResults por compatibilidad.

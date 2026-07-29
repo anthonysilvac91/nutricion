@@ -1,17 +1,18 @@
 "use client";
 
 export interface StrategyResult {
-    metricId: string;
+    metricId?: string;
     status: "CALCULATED" | "MISSING_DATA" | "NOT_APPLICABLE" | "PENDING_RULE";
-    numericValue?: number;
-    stringValue?: string;
-    unit?: string;
-    statusCode?: string;
+    numericValue?: number | null;
+    stringValue?: string | null;
+    unit?: string | null;
+    statusCode?: string | null;
     statusLabel?: string;
     metadataAsJson?: Record<string, any>;
     formulaUsed?: string;
     formulaVersion?: string;
     referenceTableId?: string;
+    reference?: { citation: string; notes?: string } | null;
     engineVersion?: string;
 }
 

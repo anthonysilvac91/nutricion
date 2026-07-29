@@ -33,13 +33,13 @@ export function EnergySection({ context, results, defaultData, onChange, readOnl
     const palOptions = context.availableFormulas?.palOptions ?? [];
 
     const [bmrFormulaId, setBmrFormulaId] = useState(defaultData?.bmrFormulaId ?? bmrOptions[0]?.id ?? "");
-    const [pal, setPal] = useState<number>(defaultData?.pal ?? palOptions[0]?.pal ?? 1.2);
+    const [pal, setPal] = useState<number>(defaultData?.pal ?? palOptions[0]?.pal ?? 0);
 
     const actualPalOption = palOptions.find(p => p.value === context.activityLevel);
     const bmrActual = context.calculatedResults?.BMR;
     const tdeeActual = context.calculatedResults?.TDEE;
-    const bmrObjetivo = results?.BMR;
-    const tdeeObjetivo = results?.TDEE;
+    const bmrObjetivo = results?.bmrKcal;
+    const tdeeObjetivo = results?.tdeeKcal;
 
     useEffect(() => {
         onChange?.({ bmrFormulaId, pal });

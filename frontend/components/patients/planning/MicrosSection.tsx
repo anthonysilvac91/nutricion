@@ -49,8 +49,8 @@ export function MicrosSection({ results, availableFormulas, defaultData, onChang
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fiberSourceId, waterSourceId, selected]);
 
-    const fiberResult = results?.FIBER_G;
-    const waterResult = results?.WATER_ML;
+    const fiberResult = results?.fiber;
+    const waterResult = results?.water;
 
     return (
         <div className="bg-white rounded-2xl border border-gray-200/70 shadow-[0_1px_4px_rgba(0,0,0,0.05),0_2px_10px_rgba(0,0,0,0.04)] overflow-hidden flex flex-col">

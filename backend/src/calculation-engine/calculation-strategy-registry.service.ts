@@ -32,6 +32,19 @@ export class CalculationStrategyRegistry implements OnModuleInit {
     return s;
   }
 
+  /** Non-throwing existence+eligibility check, for validation/blocker logic that must never crash on a bad id. */
+  isUsableForPlan(strategyId: string | undefined, population: PopulationGroup): boolean {
+    if (!strategyId) return false;
+    const s = this.byId.get(strategyId);
+    if (!s) return false;
+    return s.meta.phase.includes('PLAN') && s.meta.population.includes(population);
+  }
+
+  /** Non-throwing variant of getById, for read-only metadata lookups (e.g. calculationMetadata) that must never crash on a stale/unknown id. */
+  byIdOrNull(strategyId: string): CalculationStrategy | null {
+    return this.byId.get(strategyId) ?? null;
+  }
+
   getForMetric(metricId: string, phase: CalculationPhase, population: PopulationGroup): CalculationStrategy[] {
     return (this.byMetric.get(metricId) ?? []).filter(
       (s) => s.meta.phase.includes(phase) && s.meta.population.includes(population),

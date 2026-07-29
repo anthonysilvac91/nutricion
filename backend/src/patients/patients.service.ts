@@ -5,6 +5,7 @@ import { UpdatePatientDto } from './dto/update-patient.dto';
 import { FindAllPatientsDto } from './dto/find-all-patients.dto';
 import { CalculationStrategyRegistry } from '../calculation-engine/calculation-strategy-registry.service';
 import { PAL_OPTIONS, MACRO_METHOD_OPTIONS } from '../calculation-engine/defaults';
+import { formatClinicalDate } from '../common/clinical-date.util';
 
 @Injectable()
 export class PatientsService {
@@ -202,7 +203,7 @@ export class PatientsService {
 
     return {
       assessmentId: assessment.id,
-      date: assessment.date,
+      date: formatClinicalDate(assessment.date),
       ageYears,
       sex: patient.sex,
       activityLevel: patient.activityLevel,
