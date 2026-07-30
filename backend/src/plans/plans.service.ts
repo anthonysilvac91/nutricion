@@ -4,13 +4,16 @@ import { PrismaService } from '../prisma/prisma.service';
 import { formatClinicalDate } from '../common/clinical-date.util';
 import { CreatePlanDto } from './dto/create-plan.dto';
 import { MacroMethod, RecalculatePlanDto } from './dto/recalculate-plan.dto';
-import { AssessmentSnapshot, FinalizationReadiness, PlanCalculationService } from './plan-calculation.service';
+import { AssessmentSnapshot, CalculationMetadata, FinalizationReadiness, PlanCalculationService } from './plan-calculation.service';
 import { ACTIVITY_LEVEL_TO_PAL, DEFAULT_BMR_STRATEGY_ID, DEFAULT_FIBER_SOURCE_ID, DEFAULT_WATER_SOURCE_ID } from '../calculation-engine/defaults';
 import { StrategyResult } from '../calculation-engine/interfaces/calculation-strategy.interface';
 
 const ENGINE_VERSION = 'v1.0.0';
 
 type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
+type CompletedAssessmentWithTrace = Prisma.AssessmentGetPayload<{
+    include: { measurements: { include: { definition: true } }; results: true };
+}>;
 
 @Injectable()
 export class PlansService {
@@ -25,10 +28,10 @@ export class PlansService {
         return patient;
     }
 
-    private async loadCompletedAssessment(client: PrismaClientOrTx, patientId: string, assessmentId: string) {
+    private async loadCompletedAssessment(client: PrismaClientOrTx, patientId: string, assessmentId: string): Promise<CompletedAssessmentWithTrace> {
         const assessment = await client.assessment.findFirst({
             where: { id: assessmentId, patientId },
-            include: { measurements: true },
+            include: { measurements: { include: { definition: true } }, results: true },
         });
         if (!assessment) throw new NotFoundException('Assessment not found');
         if (assessment.status !== 'COMPLETED') {
@@ -37,24 +40,76 @@ export class PlansService {
         return assessment;
     }
 
-    private buildSnapshot(
-        assessment: Prisma.AssessmentGetPayload<{ include: { measurements: true } }>,
+    /**
+     * Builds the canonical v2 snapshot -- called exactly once, either when a DRAFT is first
+     * created (createOrGetDraft) or, for a pre-v2 legacy DRAFT, the one time it's upgraded inside
+     * ensureSnapshotV2. Never called again afterwards: recalculate()/finalize() read the
+     * persisted snapshot instead of re-deriving it, which is the whole point of freezing it.
+     */
+    private buildSnapshotV2(
+        assessment: CompletedAssessmentWithTrace,
         patient: { sex: string; activityLevel: string },
     ): AssessmentSnapshot {
         const measurementValues: Record<string, number | string> = {};
-        for (const m of assessment.measurements) {
+        const measurements = assessment.measurements.map((m) => {
             if (m.numericValue != null) measurementValues[m.definitionId] = m.numericValue;
             else if (m.stringValue) measurementValues[m.definitionId] = m.stringValue;
-        }
+            return {
+                recordId: m.id,
+                definitionId: m.definitionId,
+                name: m.definition.name,
+                unit: m.definition.unit,
+                numericValue: m.numericValue,
+                stringValue: m.stringValue,
+            };
+        });
+        const assessmentResults = assessment.results.map((r) => ({
+            metricId: r.metricId,
+            numericValue: r.numericValue,
+            stringValue: r.stringValue,
+            status: r.status,
+            formulaUsed: r.formulaUsed,
+            formulaVersion: r.formulaVersion,
+            engineVersion: r.engineVersion,
+            statusCode: r.statusCode,
+            statusLabel: r.statusLabel,
+        }));
+
         return {
+            snapshotVersion: 'v2',
             assessmentId: assessment.id,
-            date: formatClinicalDate(assessment.date),
+            assessmentDate: formatClinicalDate(assessment.date),
+            assessmentCompletedAt: assessment.completedAt ? assessment.completedAt.toISOString() : null,
             populationGroup: (assessment.populationGroup ?? 'ADULT') as AssessmentSnapshot['populationGroup'],
+            ageAtAssessmentMonths: assessment.ageAtAssessmentMonths ?? null,
             sex: patient.sex as 'MALE' | 'FEMALE',
             ageYears: assessment.ageAtAssessmentMonths != null ? Math.floor(assessment.ageAtAssessmentMonths / 12) : 0,
             activityLevel: patient.activityLevel,
             measurementValues,
+            measurements,
+            assessmentResults,
         };
+    }
+
+    /**
+     * DRAFTs created before `snapshotVersion` existed are missing the trace fields (measurements,
+     * assessmentResults, assessmentDate, ...). Rather than leave them permanently un-upgradeable,
+     * recalculate() calls this once, inside the same lock/transaction as the recalculation itself,
+     * to rebuild and persist a v2 snapshot from the still-referenced Assessment -- the one and only
+     * controlled exception to "never reconstruct sourceSnapshot from current Patient/Assessment
+     * state". Already-v2 snapshots pass through untouched and are never rewritten.
+     */
+    private async ensureSnapshotV2(
+        tx: Prisma.TransactionClient,
+        plan: { patientId: string; assessmentId: string; sourceSnapshot: unknown },
+    ): Promise<{ snapshot: AssessmentSnapshot; upgraded: boolean }> {
+        const raw = plan.sourceSnapshot as { snapshotVersion?: string } | null;
+        if (raw?.snapshotVersion === 'v2') {
+            return { snapshot: raw as unknown as AssessmentSnapshot, upgraded: false };
+        }
+        const patient = await tx.patient.findFirstOrThrow({ where: { id: plan.patientId } });
+        const assessment = await this.loadCompletedAssessment(tx, plan.patientId, plan.assessmentId);
+        return { snapshot: this.buildSnapshotV2(assessment, patient), upgraded: true };
     }
 
     /** Non-clinical starting point for an editable plan objective -- the nutritionist changes any of this via recalculate. */
@@ -73,9 +128,10 @@ export class PlansService {
     /**
      * Takes a row-level PostgreSQL lock (SELECT ... FOR UPDATE) on the NutritionalPlan for the
      * duration of the enclosing transaction, combining ownership validation in one atomic step --
-     * same pattern as AssessmentsService.lockDraftAssessment. Callers decide which status they
-     * require (recalculate/finalize need DRAFT, reopen needs FINALIZED), since unlike Assessment
-     * a Plan has two legitimate target states depending on the operation.
+     * same pattern as AssessmentsService.lockDraftAssessment. Both operations that use this
+     * (recalculate/finalize) require the plan to be DRAFT; there is no operation that ever takes a
+     * FINALIZED plan back to DRAFT, so unlike Assessment's lock helper this one has only one
+     * legitimate target status.
      */
     private async lockPlanRow(tx: Prisma.TransactionClient, userId: string, patientId: string, planId: string) {
         const rows = await tx.$queryRaw<{ id: string; status: string; assessmentId: string }[]>`
@@ -92,14 +148,17 @@ export class PlansService {
 
     /**
      * Pure reshape of an already-persisted plan row into the canonical API contract -- no DB
-     * reads, no recomputation of clinical results (those only change via recalculate/finalize).
-     * `canFinalize`/`finalizationBlockers` ARE recomputed fresh on every call (cheap, pure JS),
-     * so they're never a stale cached value even on a plain GET.
+     * reads, no recomputation of clinical results (those only change via recalculate/finalize),
+     * and no calls into the calculation-strategy registry: `reference`/`calculationMetadata` come
+     * exclusively from `plan.calculationMetadata`, frozen at write time. `canFinalize`/
+     * `finalizationBlockers` ARE recomputed fresh on every call (cheap, pure JS over the already-
+     * persisted snapshot/config/results), so they're never a stale cached value even on a plain GET.
      */
     private mapToDto(plan: any) {
         const snapshot = plan.sourceSnapshot as AssessmentSnapshot;
         const config = (plan.config ?? {}) as Partial<RecalculatePlanDto>;
         const results = (plan.calculationResults ?? {}) as Record<string, StrategyResult>;
+        const metadata = (plan.calculationMetadata ?? null) as CalculationMetadata | null;
         const readiness: FinalizationReadiness = this.planCalculation.evaluateFinalizationReadiness(snapshot, config, results);
 
         const macro = (metricId: string) => {
@@ -115,7 +174,6 @@ export class PlansService {
         const resultDto = (metricId: string, unit?: string) => {
             const r = results[metricId];
             if (!r) return null;
-            const strategy = this.planCalculation.describeCatalogChoice(r.formulaUsed);
             return {
                 numericValue: r.numericValue ?? null,
                 stringValue: r.stringValue ?? null,
@@ -124,17 +182,22 @@ export class PlansService {
                 statusCode: r.statusCode ?? null,
                 formulaUsed: r.formulaUsed,
                 formulaVersion: r.formulaVersion,
-                reference: strategy?.reference ?? null,
+                reference: metadata?.metrics?.[metricId]?.reference ?? null,
                 engineVersion: r.engineVersion,
             };
         };
+
+        // Legacy FINALIZED plans predating snapshotVersion never get rewritten (see
+        // ensureSnapshotV2), so their persisted shape still uses the old `date` key -- fall back
+        // to it here purely for display; nothing is derived or recomputed from it.
+        const assessmentDate = snapshot?.assessmentDate ?? (snapshot as any)?.date ?? null;
 
         return {
             id: plan.id,
             patientId: plan.patientId,
             assessmentId: plan.assessmentId,
             status: plan.status,
-            assessment: { date: snapshot.date, populationGroup: snapshot.populationGroup },
+            assessment: { date: assessmentDate, populationGroup: snapshot.populationGroup },
             sourceValues: {
                 weightKg: snapshot.measurementValues['m_weight'] ?? null,
                 heightCm: snapshot.measurementValues['m_height'] ?? null,
@@ -159,12 +222,18 @@ export class PlansService {
             },
             canFinalize: readiness.canFinalize,
             finalizationBlockers: readiness.finalizationBlockers,
-            calculationMetadata: {
-                engineVersion: plan.engineVersion,
-                bmrFormula: this.planCalculation.describeCatalogChoice(config.bmrFormulaId),
-                fiberSource: this.planCalculation.describeCatalogChoice(config.fiberSourceId),
-                waterSource: this.planCalculation.describeCatalogChoice(config.waterSourceId),
-            },
+            // Legacy rows created before calculationMetadata existed return null here rather than
+            // a live registry lookup -- never present dynamic/current references as if they were
+            // the historical trace of what was actually used to calculate this plan.
+            calculationMetadata: metadata
+                ? {
+                    engineVersion: metadata.engineVersion,
+                    bmrFormula: metadata.selectedSources?.bmrFormula ?? null,
+                    fiberSource: metadata.selectedSources?.fiberSource ?? null,
+                    waterSource: metadata.selectedSources?.waterSource ?? null,
+                }
+                : null,
+            calculatedAt: plan.calculatedAt ?? null,
             createdAt: plan.createdAt,
             updatedAt: plan.updatedAt,
             finalizedAt: plan.finalizedAt,
@@ -212,9 +281,10 @@ export class PlansService {
         if ((assessment.populationGroup ?? 'ADULT') !== 'ADULT') {
             throw new BadRequestException('Planificación solo está disponible para Adulto General en este momento.');
         }
-        const snapshot = this.buildSnapshot(assessment, patient);
+        const snapshot = this.buildSnapshotV2(assessment, patient);
         const config = this.defaultPlanInputs(patient, snapshot);
         const calculationResults = this.planCalculation.calculate(snapshot, config);
+        const calculationMetadata = this.planCalculation.buildCalculationMetadata(calculationResults, config);
 
         try {
             const created = await this.prisma.nutritionalPlan.create({
@@ -225,6 +295,8 @@ export class PlansService {
                     date: new Date(),
                     sourceSnapshot: snapshot as unknown as Prisma.InputJsonValue,
                     calculationResults: calculationResults as unknown as Prisma.InputJsonValue,
+                    calculationMetadata: calculationMetadata as unknown as Prisma.InputJsonValue,
+                    calculatedAt: new Date(),
                     config: config as unknown as Prisma.InputJsonValue,
                     engineVersion: ENGINE_VERSION,
                 },
@@ -248,19 +320,24 @@ export class PlansService {
         return this.prisma.$transaction(async (tx) => {
             const row = await this.lockPlanRow(tx, userId, patientId, planId);
             if (row.status !== 'DRAFT') {
-                throw new ConflictException('Plan is not a DRAFT (already finalized). Reopen it first.');
+                throw new ConflictException('Plan is not a DRAFT (already finalized); a finalized plan is permanently immutable.');
             }
 
-            const patient = await this.verifyPatientOwnership(tx, userId, patientId);
-            const assessment = await this.loadCompletedAssessment(tx, patientId, row.assessmentId);
-            const snapshot = this.buildSnapshot(assessment, patient);
+            const current = await tx.nutritionalPlan.findFirstOrThrow({ where: { id: planId } });
+            const { snapshot, upgraded } = await this.ensureSnapshotV2(tx, current);
+
             const calculationResults = this.planCalculation.calculate(snapshot, dto);
+            const calculationMetadata = this.planCalculation.buildCalculationMetadata(calculationResults, dto);
 
             const updated = await tx.nutritionalPlan.update({
                 where: { id: planId },
                 data: {
-                    sourceSnapshot: snapshot as unknown as Prisma.InputJsonValue,
+                    // Only written when this recalculate is the one-time legacy upgrade -- an
+                    // already-v2 snapshot is never re-persisted, even with identical content.
+                    ...(upgraded ? { sourceSnapshot: snapshot as unknown as Prisma.InputJsonValue } : {}),
                     calculationResults: calculationResults as unknown as Prisma.InputJsonValue,
+                    calculationMetadata: calculationMetadata as unknown as Prisma.InputJsonValue,
+                    calculatedAt: new Date(),
                     config: dto as unknown as Prisma.InputJsonValue,
                     engineVersion: ENGINE_VERSION,
                 },
@@ -277,13 +354,17 @@ export class PlansService {
                 throw new ConflictException('Plan is not a DRAFT (already finalized by another request).');
             }
 
-            const patient = await this.verifyPatientOwnership(tx, userId, patientId);
-            const assessment = await this.loadCompletedAssessment(tx, patientId, row.assessmentId);
-            const snapshot = this.buildSnapshot(assessment, patient);
-
+            // Exclusively the persisted snapshot/config -- no Patient/Assessment re-fetch. A plan
+            // reaching finalize() has always been recalculated at least once (the frontend always
+            // calls recalculate before finalize), so by this point sourceSnapshot is already v2;
+            // finalize never performs the legacy-upgrade rewrite itself, and never touches
+            // sourceSnapshot in its own update.
             const current = await tx.nutritionalPlan.findFirstOrThrow({ where: { id: planId } });
+            const snapshot = current.sourceSnapshot as unknown as AssessmentSnapshot;
             const config = (current.config ?? {}) as unknown as RecalculatePlanDto;
+
             const calculationResults = this.planCalculation.calculate(snapshot, config);
+            const calculationMetadata = this.planCalculation.buildCalculationMetadata(calculationResults, config);
             const readiness = this.planCalculation.evaluateFinalizationReadiness(snapshot, config, calculationResults);
 
             if (!readiness.canFinalize) {
@@ -302,8 +383,9 @@ export class PlansService {
                 data: {
                     status: 'FINALIZED',
                     finalizedAt: new Date(),
-                    sourceSnapshot: snapshot as unknown as Prisma.InputJsonValue,
                     calculationResults: calculationResults as unknown as Prisma.InputJsonValue,
+                    calculationMetadata: calculationMetadata as unknown as Prisma.InputJsonValue,
+                    calculatedAt: new Date(),
                     config: config as unknown as Prisma.InputJsonValue,
                     engineVersion: ENGINE_VERSION,
                 },
@@ -314,29 +396,6 @@ export class PlansService {
 
             const final = await tx.nutritionalPlan.findFirstOrThrow({ where: { id: planId } });
             return this.mapToDto(final);
-        });
-    }
-
-    // POST /patients/:patientId/plans/:id/reopen
-    async reopen(userId: string, patientId: string, planId: string) {
-        return this.prisma.$transaction(async (tx) => {
-            const row = await this.lockPlanRow(tx, userId, patientId, planId);
-            if (row.status !== 'FINALIZED') {
-                throw new ConflictException('Plan is not FINALIZED (already a draft).');
-            }
-            try {
-                const updated = await tx.nutritionalPlan.update({
-                    where: { id: planId },
-                    data: { status: 'DRAFT', finalizedAt: null },
-                });
-                return this.mapToDto(updated);
-            } catch (e) {
-                if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-                    // Another DRAFT already exists for this patient (DB partial-unique-index).
-                    throw new ConflictException('There is already an active draft for this patient. Finalize it before reopening another plan.');
-                }
-                throw e;
-            }
         });
     }
 }

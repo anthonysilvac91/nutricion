@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Save, CheckCircle, RotateCcw, FileText, ChevronDown, ClipboardList } from "lucide-react";
+import { Plus, Save, CheckCircle, FileText, ChevronDown, ClipboardList } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatClinicalDate } from "@/lib/clinicalDate";
 import { PatientValuesSection, PatientValuesData } from "./PatientValuesSection";
@@ -248,19 +248,6 @@ export function PlanningTab({ patientId }: Props) {
         }
     };
 
-    const handleReopen = async () => {
-        if (!selectedId) return;
-        setSaving(true);
-        try {
-            await api.reopenPlan(patientId, selectedId);
-            await loadPlans();
-        } catch (e: any) {
-            alert(e.message);
-        } finally {
-            setSaving(false);
-        }
-    };
-
     if (loading) return <div className="p-6 text-xs text-gray-400">Cargando planificaciones...</div>;
 
     return (
@@ -312,14 +299,6 @@ export function PlanningTab({ patientId }: Props) {
                                     </button>
                                 </>
                             )}
-                            {isReadOnly && (
-                                <button type="button" onClick={handleReopen} disabled={saving}
-                                    className="flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-full text-xs font-bold text-gray-600 hover:border-amber-400 hover:text-amber-600 shadow-sm transition-colors disabled:opacity-50">
-                                    <RotateCcw className="h-3.5 w-3.5" />
-                                    Editar
-                                </button>
-                            )}
-
                             {plans.length > 0 && (
                                 <div className="relative" ref={selectorRef}>
                                     <button type="button" onClick={() => setSelectorOpen(v => !v)}

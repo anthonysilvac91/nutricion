@@ -2,9 +2,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from './../src/app.module';
+import { PrismaService } from './../src/prisma/prisma.service';
 
 describe('Plans (e2e)', () => {
     let app: INestApplication;
+    let prisma: PrismaService;
     let token: string;
     let secondToken: string;
     let patientId: string;
@@ -20,6 +22,7 @@ describe('Plans (e2e)', () => {
 
         app = moduleFixture.createNestApplication();
         await app.init();
+        prisma = moduleFixture.get(PrismaService);
 
         // 1. Registrar nutricionista
         const resAuth = await request(app.getHttpServer())
@@ -467,6 +470,173 @@ describe('Plans (e2e)', () => {
                 .set('Authorization', `Bearer ${token}`)
                 .expect(200);
             expect(final.body.status).toBe('FINALIZED');
+        });
+    });
+
+    describe('inmutabilidad total: snapshot congelado, metadata congelada, sin reopen', () => {
+        let immutablePatientId: string;
+        let immutableAssessmentId: string;
+        let immutablePlanId: string;
+        let initialSourceSnapshot: unknown;
+
+        it('1-5. crea paciente, Assessment COMPLETED y plan DRAFT; guarda el sourceSnapshot inicial', async () => {
+            const resPatient = await request(app.getHttpServer())
+                .post('/patients')
+                .set('Authorization', `Bearer ${token}`)
+                .send({ firstName: 'Immutable', lastName: 'Snapshot', sex: 'FEMALE', birthDate: '1994-01-01T00:00:00.000Z', activityLevel: 'MODERATE' })
+                .expect(201);
+            immutablePatientId = resPatient.body.id;
+
+            const resAssessment = await request(app.getHttpServer())
+                .post(`/patients/${immutablePatientId}/assessments`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ date: '2026-01-01', measurements: [{ definitionId: 'm_weight', numericValue: 65 }, { definitionId: 'm_height', numericValue: 165 }] })
+                .expect(201);
+            immutableAssessmentId = resAssessment.body.id;
+
+            const resPlan = await request(app.getHttpServer())
+                .post(`/patients/${immutablePatientId}/plans`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ assessmentId: immutableAssessmentId })
+                .expect(201);
+            immutablePlanId = resPlan.body.id;
+            expect(resPlan.body.sourceValues).toEqual(expect.objectContaining({ sex: 'FEMALE', activityLevel: 'MODERATE' }));
+
+            const row = await prisma.nutritionalPlan.findUniqueOrThrow({ where: { id: immutablePlanId } });
+            initialSourceSnapshot = row.sourceSnapshot;
+            expect((initialSourceSnapshot as any).snapshotVersion).toBe('v2');
+            expect(row.calculationMetadata).not.toBeNull();
+            expect(row.calculatedAt).not.toBeNull();
+        });
+
+        it('6-9. cambiar sex/activityLevel del Patient y recalcular no altera el plan ya vinculado -- sourceSnapshot sigue congelado', async () => {
+            await request(app.getHttpServer())
+                .patch(`/patients/${immutablePatientId}`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ sex: 'MALE', activityLevel: 'VERY_ACTIVE' })
+                .expect(200);
+
+            const res = await request(app.getHttpServer())
+                .post(`/patients/${immutablePatientId}/plans/${immutablePlanId}/recalculate`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({
+                    bmrFormulaId: 'BMR_HARRIS_BENEDICT_V1', pal: 1.55, macroMethod: 'PERCENT',
+                    macroPercents: { PROTEIN: 15, CARBS: 55, FAT: 30 }, fiberSourceId: 'FIBER_IOM_V1', waterSourceId: 'WATER_IOM_V1',
+                })
+                .expect(201);
+
+            // El plan sigue reflejando sex/activityLevel congelados al crear el DRAFT, no los
+            // valores actuales del Patient (que ahora son MALE/VERY_ACTIVE).
+            expect(res.body.sourceValues).toEqual(expect.objectContaining({ sex: 'FEMALE', activityLevel: 'MODERATE' }));
+
+            const row = await prisma.nutritionalPlan.findUniqueOrThrow({ where: { id: immutablePlanId } });
+            expect(row.sourceSnapshot).toEqual(initialSourceSnapshot);
+        });
+
+        it('10. calculationMetadata queda persistido tras recalcular, con las fuentes seleccionadas', async () => {
+            const row = await prisma.nutritionalPlan.findUniqueOrThrow({ where: { id: immutablePlanId } });
+            const metadata = row.calculationMetadata as any;
+            expect(metadata).not.toBeNull();
+            expect(row.calculatedAt).not.toBeNull();
+            expect(metadata.selectedSources.bmrFormula.id).toBe('BMR_HARRIS_BENEDICT_V1');
+            expect(metadata.metrics.BMR.formulaId).toBe('BMR_HARRIS_BENEDICT_V1');
+        });
+
+        it('11-12. finaliza el plan', async () => {
+            const res = await request(app.getHttpServer())
+                .post(`/patients/${immutablePatientId}/plans/${immutablePlanId}/finalize`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(201);
+            expect(res.body.status).toBe('FINALIZED');
+            expect(res.body.finalizedAt).toBeDefined();
+
+            const row = await prisma.nutritionalPlan.findUniqueOrThrow({ where: { id: immutablePlanId } });
+            expect(row.sourceSnapshot).toEqual(initialSourceSnapshot);
+        });
+
+        it('13. POST .../reopen ya no existe -- la ruta devuelve 404', async () => {
+            await request(app.getHttpServer())
+                .post(`/patients/${immutablePatientId}/plans/${immutablePlanId}/reopen`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(404);
+        });
+
+        it('14. recalculate sobre un plan FINALIZED devuelve 409', async () => {
+            await request(app.getHttpServer())
+                .post(`/patients/${immutablePatientId}/plans/${immutablePlanId}/recalculate`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({
+                    bmrFormulaId: 'BMR_HARRIS_BENEDICT_V1', pal: 1.55, macroMethod: 'PERCENT',
+                    macroPercents: { PROTEIN: 15, CARBS: 55, FAT: 30 }, fiberSourceId: 'FIBER_IOM_V1', waterSourceId: 'WATER_IOM_V1',
+                })
+                .expect(409);
+        });
+
+        it('15. finalize de nuevo devuelve 409, sin duplicar información', async () => {
+            await request(app.getHttpServer())
+                .post(`/patients/${immutablePatientId}/plans/${immutablePlanId}/finalize`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(409);
+        });
+
+        it('16. GET sigue mostrando la misma referencia y metadata que al finalizar', async () => {
+            const res = await request(app.getHttpServer())
+                .get(`/patients/${immutablePatientId}/plans/${immutablePlanId}`)
+                .set('Authorization', `Bearer ${token}`)
+                .expect(200);
+            expect(res.body.status).toBe('FINALIZED');
+            expect(res.body.calculationMetadata.bmrFormula.id).toBe('BMR_HARRIS_BENEDICT_V1');
+            expect(res.body.results.bmrKcal.reference).toBeTruthy();
+        });
+
+        it('17. otro usuario no puede acceder al plan (404, no se filtra su existencia)', async () => {
+            await request(app.getHttpServer())
+                .get(`/patients/${immutablePatientId}/plans/${immutablePlanId}`)
+                .set('Authorization', `Bearer ${secondToken}`)
+                .expect(404);
+        });
+    });
+
+    describe('PAL solo acepta valores del catálogo', () => {
+        let palPatientId: string;
+        let palPlanId: string;
+
+        beforeAll(async () => {
+            const resPatient = await request(app.getHttpServer())
+                .post('/patients')
+                .set('Authorization', `Bearer ${token}`)
+                .send({ firstName: 'Pal', lastName: 'Catalog', sex: 'FEMALE', birthDate: '1994-01-01T00:00:00.000Z', activityLevel: 'MODERATE' })
+                .expect(201);
+            palPatientId = resPatient.body.id;
+
+            const resAssessment = await request(app.getHttpServer())
+                .post(`/patients/${palPatientId}/assessments`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ date: '2026-01-01', measurements: [{ definitionId: 'm_weight', numericValue: 70 }, { definitionId: 'm_height', numericValue: 170 }] })
+                .expect(201);
+
+            const resPlan = await request(app.getHttpServer())
+                .post(`/patients/${palPatientId}/plans`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ assessmentId: resAssessment.body.id })
+                .expect(201);
+            palPlanId = resPlan.body.id;
+        });
+
+        it.each([1.2, 1.375, 1.55, 1.725, 1.9])('acepta el PAL permitido %p', async (pal) => {
+            await request(app.getHttpServer())
+                .post(`/patients/${palPatientId}/plans/${palPlanId}/recalculate`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ bmrFormulaId: 'BMR_HARRIS_BENEDICT_V1', pal, macroMethod: 'PERCENT', macroPercents: { PROTEIN: 15, CARBS: 55, FAT: 30 }, fiberSourceId: 'FIBER_IOM_V1', waterSourceId: 'WATER_IOM_V1' })
+                .expect(201);
+        });
+
+        it.each([0, -1, 1.3, 2, 10])('rechaza un PAL fuera del catálogo (%p) con 400', async (pal) => {
+            await request(app.getHttpServer())
+                .post(`/patients/${palPatientId}/plans/${palPlanId}/recalculate`)
+                .set('Authorization', `Bearer ${token}`)
+                .send({ bmrFormulaId: 'BMR_HARRIS_BENEDICT_V1', pal, macroMethod: 'PERCENT', macroPercents: { PROTEIN: 15, CARBS: 55, FAT: 30 }, fiberSourceId: 'FIBER_IOM_V1', waterSourceId: 'WATER_IOM_V1' })
+                .expect(400);
         });
     });
 });

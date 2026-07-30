@@ -206,14 +206,6 @@ export const api = {
         return handleResponse(res);
     },
 
-    reopenPlan: async (patientId: string, planId: string) => {
-        const res = await fetch(`${API_BASE_URL}/patients/${patientId}/plans/${planId}/reopen`, {
-            method: "POST",
-            headers: getHeaders(),
-        });
-        return handleResponse(res);
-    },
-
     // FOODS
     getFoodSources: async () => {
         const res = await fetch(`${API_BASE_URL}/foods/sources`, { headers: getHeaders() });

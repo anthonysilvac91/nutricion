@@ -12,7 +12,8 @@ export interface StrategyResult {
     formulaUsed?: string;
     formulaVersion?: string;
     referenceTableId?: string;
-    reference?: { citation: string; notes?: string } | null;
+    /** Canonical shape: the reference citation as a plain string (or null), never an object -- comes straight from the backend's persisted calculationMetadata. */
+    reference?: string | null;
     engineVersion?: string;
 }
 

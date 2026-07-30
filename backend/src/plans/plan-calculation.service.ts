@@ -2,17 +2,81 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { ResultStatus } from '@prisma/client';
 import { CalculationStrategyRegistry } from '../calculation-engine/calculation-strategy-registry.service';
 import { CalculationInputs, PopulationGroup, StrategyResult } from '../calculation-engine/interfaces/calculation-strategy.interface';
+import { PAL_ALLOWED_VALUES } from '../calculation-engine/defaults';
 import { RecalculatePlanDto } from './dto/recalculate-plan.dto';
 
+/** One raw measurement copied verbatim from the source Assessment, frozen at snapshot time. */
+export interface AssessmentSnapshotMeasurement {
+    recordId: string;
+    definitionId: string;
+    name: string;
+    unit: string | null;
+    numericValue: number | null;
+    stringValue: string | null;
+}
+
+/** One CalculatedResult copied verbatim from the source Assessment, frozen at snapshot time. */
+export interface AssessmentSnapshotResult {
+    metricId: string;
+    numericValue: number | null;
+    stringValue: string | null;
+    status: string;
+    formulaUsed: string | null;
+    formulaVersion: string | null;
+    engineVersion: string | null;
+    statusCode: string | null;
+    statusLabel: string | null;
+}
+
+/**
+ * Frozen at plan-creation time (see PlansService.buildSnapshotV2) and never rebuilt from the
+ * Patient/Assessment afterwards -- recalculate()/finalize() read exclusively from the persisted
+ * copy, so changes to the Patient (sex, activityLevel) or the Assessment after the plan exists
+ * can never silently alter an already-bound plan. `snapshotVersion: 'v2'` distinguishes this
+ * shape from pre-existing rows created before this field set existed (see
+ * PlansService.ensureSnapshotV2 for the one-time, lock-protected upgrade path).
+ */
 export interface AssessmentSnapshot {
+    snapshotVersion: 'v2';
     assessmentId: string;
-    date: string;
+    assessmentDate: string;
+    assessmentCompletedAt: string | null;
     populationGroup: PopulationGroup;
+    ageAtAssessmentMonths: number | null;
     sex: 'MALE' | 'FEMALE';
     ageYears: number;
     activityLevel: string;
     measurementValues: Record<string, number | string>;
+    measurements: AssessmentSnapshotMeasurement[];
+    assessmentResults: AssessmentSnapshotResult[];
 }
+
+export interface CatalogChoice {
+    id: string;
+    version: string;
+    reference: string;
+}
+
+/**
+ * Traceability frozen at calculation time (create/recalculate/finalize) -- GET never calls the
+ * strategy registry to reconstruct this; it reads exactly what was persisted here, so a future
+ * change to a formula's reference/version can never retroactively alter a past calculation's
+ * displayed metadata.
+ */
+export interface CalculationMetadata {
+    metadataVersion: 'v1';
+    engineVersion: string;
+    calculatedAt: string;
+    metrics: Record<string, { formulaId: string | null; formulaVersion: string | null; reference: string | null; unit: string | null }>;
+    selectedSources: {
+        bmrFormula: CatalogChoice | null;
+        fiberSource: CatalogChoice | null;
+        waterSource: CatalogChoice | null;
+    };
+}
+
+/** Metrics traced in calculationMetadata.metrics -- same set REQUIRED_CALCULATED_METRICS gates on, plus TARGET_BMI. */
+const METADATA_METRIC_IDS = ['CURRENT_BMI', 'TARGET_BMI', 'BMR', 'TDEE', 'PROTEIN_G', 'CARBS_G', 'FAT_G', 'FIBER_G', 'WATER_ML'];
 
 export interface FinalizationBlocker {
     code: string;
@@ -42,6 +106,13 @@ export class PlanCalculationService {
     constructor(private readonly registry: CalculationStrategyRegistry) { }
 
     calculate(snapshot: AssessmentSnapshot, planInputs: RecalculatePlanDto): Record<string, StrategyResult> {
+        // Defense in depth: RecalculatePlanDto's @IsIn already rejects this at the HTTP boundary,
+        // but calculate() must not silently accept an out-of-catalog PAL if ever invoked from a
+        // path that bypasses the DTO's ValidationPipe (e.g. the legacy-snapshot upgrade replay).
+        if (!PAL_ALLOWED_VALUES.includes(planInputs.pal)) {
+            throw new BadRequestException(`pal must be one of the following values: ${PAL_ALLOWED_VALUES.join(', ')}`);
+        }
+
         const population = snapshot.populationGroup;
         const targetWeightKg = planInputs.targetWeightKg ?? (snapshot.measurementValues['m_weight'] as number | undefined);
 
@@ -222,10 +293,42 @@ export class PlanCalculationService {
     }
 
     /** Static metadata (label/version/reference) for a selected catalog choice -- used to build calculationMetadata, never exposes the strategy's formula logic itself. */
-    describeCatalogChoice(strategyId: string | undefined): { id: string; version: string; reference: string } | null {
+    describeCatalogChoice(strategyId: string | undefined): CatalogChoice | null {
         if (!strategyId) return null;
         const strategy = this.registry.byIdOrNull(strategyId);
         if (!strategy) return null;
         return { id: strategy.meta.id, version: strategy.meta.version, reference: strategy.meta.reference.citation };
+    }
+
+    /**
+     * Called exactly once per write (create/recalculate/finalize) to freeze the formula/version/
+     * reference used for each metric plus the selected BMR/fiber/water sources. PlansService
+     * persists the return value verbatim in NutritionalPlan.calculationMetadata; every GET reads
+     * that persisted value and never calls describeCatalogChoice() again, so a later change to
+     * the strategy registry (a formula's citation text, a version bump) can never retroactively
+     * alter what an already-calculated plan displays.
+     */
+    buildCalculationMetadata(results: Record<string, StrategyResult>, config: Partial<RecalculatePlanDto>): CalculationMetadata {
+        const metrics: CalculationMetadata['metrics'] = {};
+        for (const metricId of METADATA_METRIC_IDS) {
+            const r = results[metricId];
+            metrics[metricId] = {
+                formulaId: r?.formulaUsed ?? null,
+                formulaVersion: r?.formulaVersion ?? null,
+                reference: this.describeCatalogChoice(r?.formulaUsed)?.reference ?? null,
+                unit: r?.unit ?? null,
+            };
+        }
+        return {
+            metadataVersion: 'v1',
+            engineVersion: this.ENGINE_VERSION,
+            calculatedAt: new Date().toISOString(),
+            metrics,
+            selectedSources: {
+                bmrFormula: this.describeCatalogChoice(config.bmrFormulaId),
+                fiberSource: this.describeCatalogChoice(config.fiberSourceId),
+                waterSource: this.describeCatalogChoice(config.waterSourceId),
+            },
+        };
     }
 }

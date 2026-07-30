@@ -141,6 +141,14 @@ model NutritionalPlan {
   // lo tendrán; el mapper de lectura hace `config ?? {}`.
   config Json?
 
+  // Metadata de trazabilidad (fórmula/versión/referencia por métrica + fuentes
+  // seleccionadas) congelada en el momento del cálculo -- nunca se reconstruye
+  // consultando el registro de estrategias en una lectura (GET). Nullable
+  // porque es aditivo; filas previas a esta migración devuelven metadata null
+  // en vez de fabricar referencias dinámicas.
+  calculationMetadata Json?
+  calculatedAt        DateTime?
+
   // Legacy: se mantienen para no romper lecturas antiguas del frontend.
   // El backend ya no acepta contenido arbitrario del cliente aquí; se siguen
   // poblando como espejo de calculationResults por compatibilidad.

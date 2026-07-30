@@ -22,6 +22,14 @@ export const PAL_OPTIONS = [
   { value: 'VERY_ACTIVE', label: 'Extra activo', pal: ACTIVITY_LEVEL_TO_PAL.VERY_ACTIVE },
 ];
 
+/**
+ * The only PAL values a plan may be recalculated/finalized with -- derived from PAL_OPTIONS so
+ * there is a single source of truth. RecalculatePlanDto validates against this list (rejects any
+ * other positive number, e.g. 1.3 or 2), and PlanCalculationService re-checks it as defense in
+ * depth in case calculate() is ever called from a path that bypasses the DTO's ValidationPipe.
+ */
+export const PAL_ALLOWED_VALUES = PAL_OPTIONS.map((o) => o.pal);
+
 /** UI catalog for the macro prescription method picker. */
 export const MACRO_METHOD_OPTIONS = [
   { value: 'PERCENT', label: 'Porcentaje del GET' },

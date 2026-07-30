@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { ResultStatus } from '@prisma/client';
 import { PlanCalculationService, AssessmentSnapshot } from './plan-calculation.service';
 import { CalculationStrategyRegistry } from '../calculation-engine/calculation-strategy-registry.service';
@@ -131,6 +132,14 @@ describe('PlanCalculationService', () => {
         expect(() => service.calculate(baseSnapshot(), basePlanInputs({ bmrFormulaId: 'BMI_ADULT_V1' }))).toThrow();
     });
 
+    it.each([1.55, 1.2, 1.375, 1.725, 1.9])('accepts the catalog PAL value %p', (pal) => {
+        expect(() => service.calculate(baseSnapshot(), basePlanInputs({ pal }))).not.toThrow();
+    });
+
+    it.each([0, -1, 1.3, 2, 10, NaN, Infinity])('rejects an out-of-catalog PAL (%p) with BadRequestException -- defense in depth behind the DTO validator', (pal) => {
+        expect(() => service.calculate(baseSnapshot(), basePlanInputs({ pal }))).toThrow(BadRequestException);
+    });
+
     describe('evaluateFinalizationReadiness', () => {
         it('canFinalize is true when the snapshot, config and results are all complete/valid', () => {
             const snapshot = baseSnapshot();
@@ -190,6 +199,30 @@ describe('PlanCalculationService', () => {
         it('returns null for an unknown id instead of throwing', () => {
             expect(service.describeCatalogChoice('NOT_A_REAL_ID')).toBeNull();
             expect(service.describeCatalogChoice(undefined)).toBeNull();
+        });
+    });
+
+    describe('buildCalculationMetadata', () => {
+        it('freezes formula/version/reference per traced metric plus the selected sources', () => {
+            const snapshot = baseSnapshot();
+            const config = basePlanInputs();
+            const results = service.calculate(snapshot, config);
+
+            const metadata = service.buildCalculationMetadata(results, config);
+
+            expect(metadata.metadataVersion).toBe('v1');
+            expect(metadata.engineVersion).toBe('v1.0.0');
+            expect(metadata.metrics.BMR).toEqual(expect.objectContaining({ formulaId: 'BMR_HARRIS_BENEDICT_V1', formulaVersion: 'v1.0.0' }));
+            expect(metadata.metrics.BMR.reference).toBeTruthy();
+            expect(metadata.selectedSources.bmrFormula).toEqual(expect.objectContaining({ id: 'BMR_HARRIS_BENEDICT_V1' }));
+            expect(metadata.selectedSources.fiberSource).toEqual(expect.objectContaining({ id: 'FIBER_IOM_V1' }));
+            expect(metadata.selectedSources.waterSource).toEqual(expect.objectContaining({ id: 'WATER_IOM_V1' }));
+        });
+
+        it('a metric missing from results still gets a metrics entry, with nulls rather than a thrown error', () => {
+            const metadata = service.buildCalculationMetadata({}, {});
+            expect(metadata.metrics.BMR).toEqual({ formulaId: null, formulaVersion: null, reference: null, unit: null });
+            expect(metadata.selectedSources.bmrFormula).toBeNull();
         });
     });
 });

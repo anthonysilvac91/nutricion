@@ -12,7 +12,6 @@ interface PlanningContext {
     weightKg: number | null;
     fatPercentMeasured: number | null;
     calculatedResults: { BODY_FAT_PERCENTAGE?: StrategyResult };
-    availableFormulas?: { bmi?: { id: string; label: string; reference: { citation: string } }[] };
 }
 
 interface Props {
@@ -151,7 +150,7 @@ export function PatientValuesSection({ context, results, defaultData, onChange, 
                             </td>
                             <td className="pl-4 pr-6 py-4">
                                 <span className="text-[11px] text-gray-500 leading-snug">
-                                    {bmiObjetivo?.reference?.citation ?? context.availableFormulas?.bmi?.[0]?.reference?.citation ?? "—"}
+                                    {bmiObjetivo?.reference ?? "—"}
                                 </span>
                             </td>
                         </tr>

@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsEnum, IsNumber, IsObject, IsOptional, IsPositive, IsString, Max, Min, ValidateNested } from 'class-validator';
+import { IsEnum, IsIn, IsNumber, IsObject, IsOptional, IsPositive, IsString, Max, Min, ValidateNested } from 'class-validator';
+import { PAL_ALLOWED_VALUES } from '../../calculation-engine/defaults';
 
 export class MacroPercentsDto {
   @ApiProperty({ example: 15 })
@@ -32,9 +33,9 @@ export class RecalculatePlanDto {
   @IsString()
   bmrFormulaId: string;
 
-  @ApiProperty({ example: 1.55, description: 'Factor de actividad física (PAL) elegido por la nutricionista' })
+  @ApiProperty({ example: 1.55, description: 'Factor de actividad física (PAL) elegido por la nutricionista -- debe ser uno de los valores del catálogo (PAL_OPTIONS)', enum: PAL_ALLOWED_VALUES })
   @IsNumber()
-  @IsPositive()
+  @IsIn(PAL_ALLOWED_VALUES, { message: `pal must be one of the following values: ${PAL_ALLOWED_VALUES.join(', ')}` })
   pal: number;
 
   @ApiPropertyOptional({ example: 65 })

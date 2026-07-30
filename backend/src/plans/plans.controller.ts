@@ -44,18 +44,12 @@ export class PlansController {
     }
 
     // POST /patients/:patientId/plans/:id/finalize
+    // FINALIZED is permanently immutable -- there is no reopen route. A correction to a
+    // finalized plan must happen as a new plan/version, never by mutating this one.
     @ApiOperation({ summary: 'Finalizar planificación' })
     @UseGuards(SubscriptionWriteGuard)
     @Post('patients/:patientId/plans/:id/finalize')
     finalize(@Req() req: any, @Param('patientId') patientId: string, @Param('id') id: string) {
         return this.plans.finalize(req.user.sub, patientId, id);
-    }
-
-    // POST /patients/:patientId/plans/:id/reopen
-    @ApiOperation({ summary: 'Reabrir planificación finalizada como borrador' })
-    @UseGuards(SubscriptionWriteGuard)
-    @Post('patients/:patientId/plans/:id/reopen')
-    reopen(@Req() req: any, @Param('patientId') patientId: string, @Param('id') id: string) {
-        return this.plans.reopen(req.user.sub, patientId, id);
     }
 }

@@ -2,11 +2,12 @@ import { BadRequestException, ConflictException, NotFoundException } from '@nest
 import { Prisma, ResultStatus } from '@prisma/client';
 import { PlansService } from './plans.service';
 import { MacroMethod } from './dto/recalculate-plan.dto';
+import { CalculationMetadata } from './plan-calculation.service';
 
 function buildPrismaMock() {
     const tx = {
         $queryRaw: jest.fn(),
-        patient: { findFirst: jest.fn() },
+        patient: { findFirst: jest.fn(), findFirstOrThrow: jest.fn() },
         assessment: { findFirst: jest.fn() },
         nutritionalPlan: {
             findFirst: jest.fn(),
@@ -25,26 +26,48 @@ function buildPrismaMock() {
             create: jest.fn(),
         },
         // Supports both call shapes: a callback (interactive transaction, used by
-        // recalculate/finalize/reopen) and an array of prisma promises (not used here, kept for safety).
+        // recalculate/finalize) and an array of prisma promises (not used here, kept for safety).
         $transaction: jest.fn((arg: any) => (typeof arg === 'function' ? arg(tx) : Promise.all(arg))),
     };
     return { prisma, tx };
 }
 
+const PATIENT = { id: 'patient-1', userId: 'user-1', sex: 'FEMALE', activityLevel: 'MODERATE' };
+
+// Shape returned by `assessment.findFirst({ include: { measurements: { include: { definition:
+// true } }, results: true } })` -- what PlansService.loadCompletedAssessment/buildSnapshotV2
+// actually consume.
 const COMPLETED_ASSESSMENT = {
     id: 'assessment-1',
     patientId: 'patient-1',
     status: 'COMPLETED',
     date: new Date('2026-01-01T12:00:00.000Z'),
+    completedAt: new Date('2026-01-01T13:00:00.000Z'),
     ageAtAssessmentMonths: 360,
     populationGroup: 'ADULT',
     measurements: [
-        { definitionId: 'm_weight', numericValue: 65, stringValue: null },
-        { definitionId: 'm_height', numericValue: 165, stringValue: null },
+        { id: 'rec-weight', definitionId: 'm_weight', numericValue: 65, stringValue: null, definition: { name: 'Peso', unit: 'kg' } },
+        { id: 'rec-height', definitionId: 'm_height', numericValue: 165, stringValue: null, definition: { name: 'Estatura', unit: 'cm' } },
+    ],
+    results: [
+        { metricId: 'BMI', numericValue: 23.9, stringValue: null, status: 'CALCULATED', formulaUsed: 'BMI_ADULT_V1', formulaVersion: 'v1.0.0', engineVersion: 'v1.0.0', statusCode: 'NORMAL', statusLabel: 'Normal' },
     ],
 };
 
-const PATIENT = { id: 'patient-1', userId: 'user-1', sex: 'FEMALE', activityLevel: 'MODERATE' };
+const V2_SNAPSHOT = {
+    snapshotVersion: 'v2' as const,
+    assessmentId: 'assessment-1',
+    assessmentDate: '2026-01-01',
+    assessmentCompletedAt: '2026-01-01T13:00:00.000Z',
+    populationGroup: 'ADULT' as const,
+    ageAtAssessmentMonths: 360,
+    sex: 'FEMALE' as const,
+    ageYears: 30,
+    activityLevel: 'MODERATE',
+    measurementValues: { m_weight: 65, m_height: 165 },
+    measurements: [],
+    assessmentResults: [],
+};
 
 const VALID_RECALCULATE_DTO = {
     bmrFormulaId: 'BMR_HARRIS_BENEDICT_V1',
@@ -75,6 +98,23 @@ function fakeCalculationResults(overrides: Record<string, any> = {}) {
     };
 }
 
+function fakeCalculationMetadata(overrides: Partial<CalculationMetadata> = {}): CalculationMetadata {
+    return {
+        metadataVersion: 'v1',
+        engineVersion: 'v1.0.0',
+        calculatedAt: '2026-01-01T00:00:00.000Z',
+        metrics: {
+            CURRENT_BMI: { formulaId: 'FAKE_V1', formulaVersion: 'v1.0.0', reference: 'Fake reference', unit: 'unit' },
+        },
+        selectedSources: {
+            bmrFormula: { id: 'BMR_HARRIS_BENEDICT_V1', version: 'v1.0.0', reference: 'Harris-Benedict reference' },
+            fiberSource: { id: 'FIBER_IOM_V1', version: 'v1.0.0', reference: 'IOM reference' },
+            waterSource: { id: 'WATER_IOM_V1', version: 'v1.0.0', reference: 'IOM water reference' },
+        },
+        ...overrides,
+    };
+}
+
 describe('PlansService', () => {
     let prisma: ReturnType<typeof buildPrismaMock>['prisma'];
     let tx: ReturnType<typeof buildPrismaMock>['tx'];
@@ -82,6 +122,7 @@ describe('PlansService', () => {
         calculate: jest.Mock;
         evaluateFinalizationReadiness: jest.Mock;
         describeCatalogChoice: jest.Mock;
+        buildCalculationMetadata: jest.Mock;
     };
     let service: PlansService;
 
@@ -93,8 +134,13 @@ describe('PlansService', () => {
             calculate: jest.fn().mockReturnValue(fakeCalculationResults()),
             evaluateFinalizationReadiness: jest.fn().mockReturnValue({ canFinalize: true, finalizationBlockers: [] }),
             describeCatalogChoice: jest.fn().mockReturnValue(null),
+            buildCalculationMetadata: jest.fn().mockReturnValue(fakeCalculationMetadata()),
         };
         service = new PlansService(prisma as any, planCalculation as any);
+    });
+
+    it('does not expose a reopen method -- FINALIZED is permanently immutable, there is no path back to DRAFT', () => {
+        expect((service as any).reopen).toBeUndefined();
     });
 
     describe('findOne (ownership + DTO mapping)', () => {
@@ -110,12 +156,14 @@ describe('PlansService', () => {
             expect(prisma.nutritionalPlan.findFirst).toHaveBeenCalledWith({ where: { id: 'plan-1', patientId: 'someone-elses-patient', userId: 'user-1' } });
         });
 
-        it('maps a persisted plan row into the canonical DTO shape without recomputing clinical results', async () => {
+        it('maps a persisted plan row into the canonical DTO shape without recomputing clinical results or calling the registry', async () => {
             prisma.nutritionalPlan.findFirst.mockResolvedValue({
                 id: 'plan-1', patientId: 'patient-1', assessmentId: 'assessment-1', status: 'DRAFT',
-                sourceSnapshot: { assessmentId: 'assessment-1', date: '2026-01-01', populationGroup: 'ADULT', sex: 'FEMALE', ageYears: 30, activityLevel: 'MODERATE', measurementValues: { m_weight: 65, m_height: 165 } },
+                sourceSnapshot: V2_SNAPSHOT,
                 config: VALID_RECALCULATE_DTO,
                 calculationResults: fakeCalculationResults(),
+                calculationMetadata: fakeCalculationMetadata(),
+                calculatedAt: new Date('2026-01-01T00:00:00.000Z'),
                 engineVersion: 'v1.0.0',
                 createdAt: new Date(), updatedAt: new Date(), finalizedAt: null,
             });
@@ -123,12 +171,60 @@ describe('PlansService', () => {
             const dto = await service.findOne('user-1', 'patient-1', 'plan-1');
 
             expect(planCalculation.calculate).not.toHaveBeenCalled();
+            expect(planCalculation.describeCatalogChoice).not.toHaveBeenCalled();
             expect(dto.id).toBe('plan-1');
             expect(dto.assessment).toEqual({ date: '2026-01-01', populationGroup: 'ADULT' });
             expect(dto.sourceValues).toEqual({ weightKg: 65, heightCm: 165, ageYears: 30, sex: 'FEMALE', activityLevel: 'MODERATE' });
             expect(dto.results.macros.protein).toEqual({ percentage: 15, grams: 10, gramsPerKg: 0.5, status: 'CALCULATED' });
+            expect(dto.results.currentBmi?.reference).toBe('Fake reference');
+            expect(dto.calculationMetadata).toEqual({
+                engineVersion: 'v1.0.0',
+                bmrFormula: { id: 'BMR_HARRIS_BENEDICT_V1', version: 'v1.0.0', reference: 'Harris-Benedict reference' },
+                fiberSource: { id: 'FIBER_IOM_V1', version: 'v1.0.0', reference: 'IOM reference' },
+                waterSource: { id: 'WATER_IOM_V1', version: 'v1.0.0', reference: 'IOM water reference' },
+            });
             expect(dto.canFinalize).toBe(true);
             expect(dto.finalizationBlockers).toEqual([]);
+        });
+
+        it('a simulated registry change never alters a FINALIZED plan\'s displayed reference -- it always reads the frozen calculationMetadata', async () => {
+            prisma.nutritionalPlan.findFirst.mockResolvedValue({
+                id: 'plan-1', patientId: 'patient-1', assessmentId: 'assessment-1', status: 'FINALIZED',
+                sourceSnapshot: V2_SNAPSHOT,
+                config: VALID_RECALCULATE_DTO,
+                calculationResults: fakeCalculationResults(),
+                calculationMetadata: fakeCalculationMetadata({
+                    metrics: { CURRENT_BMI: { formulaId: 'FAKE_V1', formulaVersion: 'v1.0.0', reference: 'ORIGINAL frozen reference', unit: 'unit' } },
+                }),
+                calculatedAt: new Date(), engineVersion: 'v1.0.0', createdAt: new Date(), updatedAt: new Date(), finalizedAt: new Date(),
+            });
+            // Simulates the registry having since changed -- mapToDto must never call this for a GET.
+            planCalculation.describeCatalogChoice.mockReturnValue({ id: 'FAKE_V1', version: 'v2.0.0', reference: 'A DIFFERENT reference after a later formula update' });
+
+            const dto = await service.findOne('user-1', 'patient-1', 'plan-1');
+
+            expect(dto.results.currentBmi?.reference).toBe('ORIGINAL frozen reference');
+            expect(planCalculation.describeCatalogChoice).not.toHaveBeenCalled();
+        });
+
+        it('legacy rows created before calculationMetadata existed return calculationMetadata: null, never a live reconstruction', async () => {
+            prisma.nutritionalPlan.findFirst.mockResolvedValue({
+                id: 'plan-1', patientId: 'patient-1', assessmentId: 'assessment-1', status: 'FINALIZED',
+                sourceSnapshot: { assessmentId: 'assessment-1', date: '2026-01-01', populationGroup: 'ADULT', sex: 'FEMALE', ageYears: 30, activityLevel: 'MODERATE', measurementValues: { m_weight: 65, m_height: 165 } },
+                config: VALID_RECALCULATE_DTO,
+                calculationResults: fakeCalculationResults(),
+                calculationMetadata: null,
+                calculatedAt: null,
+                engineVersion: 'v1.0.0', createdAt: new Date(), updatedAt: new Date(), finalizedAt: new Date(),
+            });
+
+            const dto = await service.findOne('user-1', 'patient-1', 'plan-1');
+
+            expect(dto.calculationMetadata).toBeNull();
+            expect(dto.results.currentBmi?.reference).toBeNull();
+            // Legacy pre-v2 snapshot still displays its date via the old `date` key fallback.
+            expect(dto.assessment.date).toBe('2026-01-01');
+            expect(planCalculation.describeCatalogChoice).not.toHaveBeenCalled();
         });
     });
 
@@ -142,7 +238,7 @@ describe('PlansService', () => {
             prisma.patient.findFirst.mockResolvedValue(PATIENT);
             const existing = {
                 id: 'plan-existing', status: 'DRAFT', assessmentId: 'assessment-1',
-                sourceSnapshot: { measurementValues: {} }, config: {}, calculationResults: {},
+                sourceSnapshot: V2_SNAPSHOT, config: {}, calculationResults: {}, calculationMetadata: null,
             };
             prisma.nutritionalPlan.findFirst.mockResolvedValue(existing);
 
@@ -178,24 +274,44 @@ describe('PlansService', () => {
             expect(planCalculation.calculate).not.toHaveBeenCalled();
         });
 
-        it('builds a snapshot from the assessment and persists the computed calculationResults + config', async () => {
+        it('builds a v2 snapshot from the assessment and persists sourceSnapshot + calculationResults + calculationMetadata + config, all in one write', async () => {
             prisma.patient.findFirst.mockResolvedValue(PATIENT);
             prisma.nutritionalPlan.findFirst.mockResolvedValue(null);
             prisma.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
             prisma.nutritionalPlan.create.mockResolvedValue({
                 id: 'new-plan', patientId: 'patient-1', assessmentId: 'assessment-1', status: 'DRAFT',
-                sourceSnapshot: { measurementValues: { m_weight: 65, m_height: 165 } }, config: {}, calculationResults: fakeCalculationResults(),
-                engineVersion: 'v1.0.0', createdAt: new Date(), updatedAt: new Date(), finalizedAt: null,
+                sourceSnapshot: V2_SNAPSHOT, config: {}, calculationResults: fakeCalculationResults(), calculationMetadata: fakeCalculationMetadata(),
+                calculatedAt: new Date(), engineVersion: 'v1.0.0', createdAt: new Date(), updatedAt: new Date(), finalizedAt: null,
             });
 
             const result = await service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-1' } as any);
 
             expect(planCalculation.calculate).toHaveBeenCalledWith(
-                expect.objectContaining({ assessmentId: 'assessment-1', sex: 'FEMALE', measurementValues: { m_weight: 65, m_height: 165 } }),
+                expect.objectContaining({
+                    snapshotVersion: 'v2',
+                    assessmentId: 'assessment-1',
+                    assessmentDate: '2026-01-01',
+                    sex: 'FEMALE',
+                    measurementValues: { m_weight: 65, m_height: 165 },
+                    measurements: expect.arrayContaining([
+                        expect.objectContaining({ definitionId: 'm_weight', name: 'Peso', unit: 'kg', numericValue: 65 }),
+                    ]),
+                    assessmentResults: expect.arrayContaining([expect.objectContaining({ metricId: 'BMI' })]),
+                }),
                 expect.objectContaining({ bmrFormulaId: 'BMR_HARRIS_BENEDICT_V1', pal: 1.55 }),
             );
+            expect(planCalculation.buildCalculationMetadata).toHaveBeenCalled();
             expect(prisma.nutritionalPlan.create).toHaveBeenCalledWith(
-                expect.objectContaining({ data: expect.objectContaining({ assessmentId: 'assessment-1', engineVersion: 'v1.0.0', config: expect.objectContaining({ bmrFormulaId: 'BMR_HARRIS_BENEDICT_V1' }) }) }),
+                expect.objectContaining({
+                    data: expect.objectContaining({
+                        assessmentId: 'assessment-1',
+                        engineVersion: 'v1.0.0',
+                        config: expect.objectContaining({ bmrFormulaId: 'BMR_HARRIS_BENEDICT_V1' }),
+                        sourceSnapshot: expect.objectContaining({ snapshotVersion: 'v2' }),
+                        calculationMetadata: expect.any(Object),
+                        calculatedAt: expect.any(Date),
+                    }),
+                }),
             );
             expect(result.id).toBe('new-plan');
         });
@@ -208,7 +324,7 @@ describe('PlansService', () => {
             prisma.nutritionalPlan.create.mockRejectedValue(p2002);
             prisma.nutritionalPlan.findFirstOrThrow.mockResolvedValue({
                 id: 'winning-draft', assessmentId: 'assessment-1', status: 'DRAFT',
-                sourceSnapshot: { measurementValues: {} }, config: {}, calculationResults: {},
+                sourceSnapshot: V2_SNAPSHOT, config: {}, calculationResults: {}, calculationMetadata: null,
             });
 
             const result = await service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-1' } as any);
@@ -227,7 +343,7 @@ describe('PlansService', () => {
         });
     });
 
-    describe('recalculate (locked, transactional)', () => {
+    describe('recalculate (locked, transactional, frozen snapshot)', () => {
         function mockLockRow(status: string | null, assessmentId = 'assessment-1') {
             tx.$queryRaw.mockResolvedValue(status ? [{ id: 'plan-1', status, assessmentId }] : []);
         }
@@ -237,36 +353,71 @@ describe('PlansService', () => {
             await expect(service.recalculate('user-1', 'patient-1', 'plan-1', VALID_RECALCULATE_DTO)).rejects.toThrow(NotFoundException);
         });
 
-        it('throws ConflictException (409) when the plan is not a DRAFT (already finalized)', async () => {
+        it('throws ConflictException (409) when the plan is not a DRAFT (already finalized) -- FINALIZED cannot be recalculated', async () => {
             mockLockRow('FINALIZED');
             await expect(service.recalculate('user-1', 'patient-1', 'plan-1', VALID_RECALCULATE_DTO)).rejects.toThrow(ConflictException);
             expect(planCalculation.calculate).not.toHaveBeenCalled();
             expect(tx.nutritionalPlan.update).not.toHaveBeenCalled();
         });
 
-        it('locks the row via FOR UPDATE, recomputes and persists calculationResults + config for a DRAFT plan', async () => {
+        it('an already-v2 snapshot: recalculates using exclusively the persisted snapshot, never re-querying Patient/Assessment, and never rewrites sourceSnapshot', async () => {
             mockLockRow('DRAFT');
-            tx.patient.findFirst.mockResolvedValue(PATIENT);
-            tx.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
+            tx.nutritionalPlan.findFirstOrThrow.mockResolvedValue({
+                id: 'plan-1', patientId: 'patient-1', assessmentId: 'assessment-1', sourceSnapshot: V2_SNAPSHOT,
+            });
             tx.nutritionalPlan.update.mockResolvedValue({
                 id: 'plan-1', patientId: 'patient-1', assessmentId: 'assessment-1', status: 'DRAFT',
-                sourceSnapshot: { measurementValues: {} }, config: VALID_RECALCULATE_DTO, calculationResults: fakeCalculationResults(),
+                sourceSnapshot: V2_SNAPSHOT, config: VALID_RECALCULATE_DTO, calculationResults: fakeCalculationResults(),
+                calculationMetadata: fakeCalculationMetadata(), calculatedAt: new Date(),
                 engineVersion: 'v1.0.0', createdAt: new Date(), updatedAt: new Date(), finalizedAt: null,
             });
 
             const result = await service.recalculate('user-1', 'patient-1', 'plan-1', VALID_RECALCULATE_DTO);
 
             expect(tx.$queryRaw).toHaveBeenCalled();
-            expect(planCalculation.calculate).toHaveBeenCalledWith(expect.objectContaining({ assessmentId: 'assessment-1' }), VALID_RECALCULATE_DTO);
-            expect(tx.nutritionalPlan.update).toHaveBeenCalledWith({
+            expect(planCalculation.calculate).toHaveBeenCalledWith(V2_SNAPSHOT, VALID_RECALCULATE_DTO);
+            expect(tx.patient.findFirstOrThrow).not.toHaveBeenCalled();
+            expect(tx.assessment.findFirst).not.toHaveBeenCalled();
+            expect(planCalculation.buildCalculationMetadata).toHaveBeenCalledWith(expect.any(Object), VALID_RECALCULATE_DTO);
+
+            const updateCall = tx.nutritionalPlan.update.mock.calls[0][0];
+            expect(updateCall).toEqual({
                 where: { id: 'plan-1' },
-                data: expect.objectContaining({ engineVersion: 'v1.0.0', config: VALID_RECALCULATE_DTO }),
+                data: expect.objectContaining({ engineVersion: 'v1.0.0', config: VALID_RECALCULATE_DTO, calculatedAt: expect.any(Date) }),
             });
+            // The whole point of freezing the snapshot: an already-v2 snapshot is never
+            // re-included in the update payload, even with identical content.
+            expect(updateCall.data.sourceSnapshot).toBeUndefined();
             expect(result.id).toBe('plan-1');
+        });
+
+        it('a legacy (pre-v2) DRAFT snapshot is upgraded exactly once, inside the same lock, by rebuilding it from the still-referenced Assessment', async () => {
+            mockLockRow('DRAFT');
+            const legacySnapshot = { assessmentId: 'assessment-1', date: '2026-01-01', populationGroup: 'ADULT', sex: 'FEMALE', ageYears: 30, activityLevel: 'MODERATE', measurementValues: { m_weight: 65, m_height: 165 } };
+            tx.nutritionalPlan.findFirstOrThrow.mockResolvedValue({
+                id: 'plan-1', patientId: 'patient-1', assessmentId: 'assessment-1', sourceSnapshot: legacySnapshot,
+            });
+            tx.patient.findFirstOrThrow.mockResolvedValue(PATIENT);
+            tx.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
+            tx.nutritionalPlan.update.mockResolvedValue({
+                id: 'plan-1', patientId: 'patient-1', assessmentId: 'assessment-1', status: 'DRAFT',
+                sourceSnapshot: V2_SNAPSHOT, config: VALID_RECALCULATE_DTO, calculationResults: fakeCalculationResults(),
+                calculationMetadata: fakeCalculationMetadata(), calculatedAt: new Date(),
+                engineVersion: 'v1.0.0', createdAt: new Date(), updatedAt: new Date(), finalizedAt: null,
+            });
+
+            await service.recalculate('user-1', 'patient-1', 'plan-1', VALID_RECALCULATE_DTO);
+
+            expect(tx.patient.findFirstOrThrow).toHaveBeenCalledWith({ where: { id: 'patient-1' } });
+            expect(tx.assessment.findFirst).toHaveBeenCalled();
+            const updateCall = tx.nutritionalPlan.update.mock.calls[0][0];
+            // The upgrade IS persisted this one time -- and calculate() ran against the rebuilt v2 shape.
+            expect(updateCall.data.sourceSnapshot).toEqual(expect.objectContaining({ snapshotVersion: 'v2', assessmentDate: '2026-01-01' }));
+            expect(planCalculation.calculate).toHaveBeenCalledWith(expect.objectContaining({ snapshotVersion: 'v2' }), VALID_RECALCULATE_DTO);
         });
     });
 
-    describe('finalize (locked, transactional, revalidated)', () => {
+    describe('finalize (locked, transactional, revalidated, snapshot never rewritten)', () => {
         function mockLockRow(status: string | null, assessmentId = 'assessment-1') {
             tx.$queryRaw.mockResolvedValue(status ? [{ id: 'plan-1', status, assessmentId }] : []);
         }
@@ -281,11 +432,9 @@ describe('PlansService', () => {
             await expect(service.finalize('user-1', 'patient-1', 'plan-1')).rejects.toThrow(ConflictException);
         });
 
-        it('re-validates canFinalize inside the transaction and rejects with 400 + blockers when not ready', async () => {
+        it('re-validates canFinalize inside the transaction, using the persisted snapshot, and rejects with 400 + blockers when not ready', async () => {
             mockLockRow('DRAFT');
-            tx.patient.findFirst.mockResolvedValue(PATIENT);
-            tx.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
-            tx.nutritionalPlan.findFirstOrThrow.mockResolvedValue({ id: 'plan-1', config: VALID_RECALCULATE_DTO });
+            tx.nutritionalPlan.findFirstOrThrow.mockResolvedValue({ id: 'plan-1', sourceSnapshot: V2_SNAPSHOT, config: VALID_RECALCULATE_DTO });
             planCalculation.evaluateFinalizationReadiness.mockReturnValue({
                 canFinalize: false,
                 finalizationBlockers: [{ code: 'MISSING_WEIGHT', field: 'weightKg', message: 'x' }],
@@ -293,71 +442,40 @@ describe('PlansService', () => {
 
             await expect(service.finalize('user-1', 'patient-1', 'plan-1')).rejects.toThrow(BadRequestException);
             expect(tx.nutritionalPlan.updateMany).not.toHaveBeenCalled();
+            expect(tx.patient.findFirstOrThrow).not.toHaveBeenCalled();
+            expect(tx.assessment.findFirst).not.toHaveBeenCalled();
         });
 
-        it('flips status to FINALIZED via a conditional updateMany when canFinalize is true', async () => {
+        it('flips status to FINALIZED via a conditional updateMany, persists calculationMetadata/calculatedAt, and never touches sourceSnapshot', async () => {
             mockLockRow('DRAFT');
-            tx.patient.findFirst.mockResolvedValue(PATIENT);
-            tx.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
             tx.nutritionalPlan.findFirstOrThrow
-                .mockResolvedValueOnce({ id: 'plan-1', config: VALID_RECALCULATE_DTO }) // read config before computing
+                .mockResolvedValueOnce({ id: 'plan-1', sourceSnapshot: V2_SNAPSHOT, config: VALID_RECALCULATE_DTO }) // read before computing
                 .mockResolvedValueOnce({
                     id: 'plan-1', patientId: 'patient-1', assessmentId: 'assessment-1', status: 'FINALIZED',
-                    sourceSnapshot: { measurementValues: {} }, config: VALID_RECALCULATE_DTO, calculationResults: fakeCalculationResults(),
+                    sourceSnapshot: V2_SNAPSHOT, config: VALID_RECALCULATE_DTO, calculationResults: fakeCalculationResults(),
+                    calculationMetadata: fakeCalculationMetadata(), calculatedAt: new Date(),
                     engineVersion: 'v1.0.0', createdAt: new Date(), updatedAt: new Date(), finalizedAt: new Date(),
                 });
             tx.nutritionalPlan.updateMany.mockResolvedValue({ count: 1 });
 
             const result = await service.finalize('user-1', 'patient-1', 'plan-1');
 
-            expect(tx.nutritionalPlan.updateMany).toHaveBeenCalledWith({
-                where: { id: 'plan-1', status: 'DRAFT' },
-                data: expect.objectContaining({ status: 'FINALIZED', finalizedAt: expect.any(Date) }),
-            });
+            expect(planCalculation.calculate).toHaveBeenCalledWith(V2_SNAPSHOT, VALID_RECALCULATE_DTO);
+            expect(tx.patient.findFirstOrThrow).not.toHaveBeenCalled();
+            expect(tx.assessment.findFirst).not.toHaveBeenCalled();
+            const updateManyCall = tx.nutritionalPlan.updateMany.mock.calls[0][0];
+            expect(updateManyCall.where).toEqual({ id: 'plan-1', status: 'DRAFT' });
+            expect(updateManyCall.data).toEqual(expect.objectContaining({ status: 'FINALIZED', finalizedAt: expect.any(Date), calculatedAt: expect.any(Date) }));
+            expect(updateManyCall.data.sourceSnapshot).toBeUndefined();
             expect(result.status).toBe('FINALIZED');
         });
 
         it('throws ConflictException when the conditional status flip affects 0 rows (lost a concurrent race)', async () => {
             mockLockRow('DRAFT');
-            tx.patient.findFirst.mockResolvedValue(PATIENT);
-            tx.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
-            tx.nutritionalPlan.findFirstOrThrow.mockResolvedValue({ id: 'plan-1', config: VALID_RECALCULATE_DTO });
+            tx.nutritionalPlan.findFirstOrThrow.mockResolvedValue({ id: 'plan-1', sourceSnapshot: V2_SNAPSHOT, config: VALID_RECALCULATE_DTO });
             tx.nutritionalPlan.updateMany.mockResolvedValue({ count: 0 });
 
             await expect(service.finalize('user-1', 'patient-1', 'plan-1')).rejects.toThrow(ConflictException);
-        });
-    });
-
-    describe('reopen (locked, transactional)', () => {
-        function mockLockRow(status: string | null, assessmentId = 'assessment-1') {
-            tx.$queryRaw.mockResolvedValue(status ? [{ id: 'plan-1', status, assessmentId }] : []);
-        }
-
-        it('throws ConflictException (409) when the plan is not FINALIZED (already a draft)', async () => {
-            mockLockRow('DRAFT');
-            await expect(service.reopen('user-1', 'patient-1', 'plan-1')).rejects.toThrow(ConflictException);
-        });
-
-        it('throws ConflictException (409) when another DRAFT is already active (DB partial unique index)', async () => {
-            mockLockRow('FINALIZED');
-            const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
-            tx.nutritionalPlan.update.mockRejectedValue(p2002);
-
-            await expect(service.reopen('user-1', 'patient-1', 'plan-1')).rejects.toThrow(ConflictException);
-        });
-
-        it('flips status back to DRAFT and clears finalizedAt', async () => {
-            mockLockRow('FINALIZED');
-            tx.nutritionalPlan.update.mockResolvedValue({
-                id: 'plan-1', patientId: 'patient-1', assessmentId: 'assessment-1', status: 'DRAFT',
-                sourceSnapshot: { measurementValues: {} }, config: VALID_RECALCULATE_DTO, calculationResults: fakeCalculationResults(),
-                engineVersion: 'v1.0.0', createdAt: new Date(), updatedAt: new Date(), finalizedAt: null,
-            });
-
-            const result = await service.reopen('user-1', 'patient-1', 'plan-1');
-
-            expect(tx.nutritionalPlan.update).toHaveBeenCalledWith({ where: { id: 'plan-1' }, data: { status: 'DRAFT', finalizedAt: null } });
-            expect(result.status).toBe('DRAFT');
         });
     });
 });
