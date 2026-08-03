@@ -48,6 +48,10 @@ model User {
   patients  Patient[]
   foodItems FoodItem[]
 
+  // Workspace foundation (fase Consulta Clínica, corte 1) -- ver comentarios en Workspace.
+  ownedWorkspaces      Workspace[]       @relation("WorkspaceOwner")
+  workspaceMemberships WorkspaceMember[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -63,14 +67,83 @@ model Patient {
   birthDate     DateTime
   activityLevel ActivityLevel
 
-  measurements      Measurement[]
-  results           Result[]
-  assessments       Assessment[]
-  nutritionalPlans  NutritionalPlan[]
+  measurements     Measurement[]
+  results          Result[]
+  assessments      Assessment[]
+  nutritionalPlans NutritionalPlan[]
+
+  // Nullable en este commit (Migración A): PatientsService sigue autorizando
+  // por userId sin cambios; workspaceId se backfillea para todo Patient
+  // existente pero todavía no es la autoridad de acceso. La Migración B
+  // (commit siguiente) lo convierte en NOT NULL una vez verificado el backfill.
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([userId])
+  @@index([workspaceId])
+}
+
+// ----------------------------------------------------------------------
+// WORKSPACE (fundación multi-tenant -- corte 1 de la fase Consulta Clínica)
+// ----------------------------------------------------------------------
+// Introducido ahora, con MVP de un único Workspace PERSONAL por nutricionista,
+// para que ClinicalEncounter (cortes posteriores) nazca ya con el eje de
+// autorización correcto y no requiera una segunda migración masiva cuando
+// existan centros. En este corte, Workspace es una fundación de datos --
+// invisible para la aplicación: ningún endpoint lo crea, edita ni expone.
+enum WorkspaceRole {
+  OWNER
+  PROFESSIONAL // sin uso en el MVP; preparado para centros con varios profesionales
+}
+
+enum WorkspaceType {
+  PERSONAL
+  CENTER // preparado en BD; sin UI/endpoints en este corte
+}
+
+model Workspace {
+  id          String @id @default(uuid())
+  ownerUserId String
+  owner       User   @relation("WorkspaceOwner", fields: [ownerUserId], references: [id])
+
+  type     WorkspaceType @default(PERSONAL)
+  name     String
+  timezone String        @default("America/Santiago")
+
+  members  WorkspaceMember[]
+  patients Patient[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  // Un mismo usuario puede tener como mucho un Workspace PERSONAL, pero podrá
+  // ser owner de varios Workspace CENTER a futuro -- por eso NO se usa
+  // `ownerUserId @unique` aquí. La restricción real vive en un índice único
+  // parcial creado a mano en la migración (Prisma DSL no soporta índices
+  // únicos parciales, mismo caso ya documentado para Assessment/NutritionalPlan):
+  //   CREATE UNIQUE INDEX "Workspace_one_personal_per_owner"
+  //     ON "Workspace" ("ownerUserId") WHERE "type" = 'PERSONAL';
+
+  @@index([ownerUserId])
+  @@index([type])
+}
+
+model WorkspaceMember {
+  id          String    @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  role WorkspaceRole @default(OWNER)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([workspaceId, userId])
   @@index([userId])
 }
 
