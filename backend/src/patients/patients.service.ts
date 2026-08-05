@@ -151,14 +151,22 @@ export class PatientsService {
       return { message: 'Patient removed successfully' };
     } catch (e) {
       // ClinicalEncounter.patient usa onDelete: Restrict a propósito (corte 2 --
-      // una consulta clínica nunca debe desaparecer al eliminar el Patient).
-      // Se traduce el P2003 crudo de Prisma a un 409 explícito en vez de dejar
-      // que el filtro global lo reporte como un error genérico.
+      // una consulta clínica nunca debe desaparecer al eliminar el Patient),
+      // pero Patient también es referenciado (sin cascade) por Measurement,
+      // Result, Assessment y NutritionalPlan -- cualquiera de esas relaciones
+      // puede disparar el mismo P2003. Solo se etiqueta como
+      // PATIENT_HAS_CLINICAL_ENCOUNTERS cuando realmente existe al menos un
+      // ClinicalEncounter para este paciente; en cualquier otro caso se
+      // relanza el error original tal como se comportaba antes de este corte,
+      // sin inventar una causa que no es la real.
       if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
-        throw new ConflictException({
-          code: 'PATIENT_HAS_CLINICAL_ENCOUNTERS',
-          message: 'No se puede eliminar un paciente con consultas clínicas registradas.',
-        });
+        const hasClinicalEncounters = await this.prisma.clinicalEncounter.count({ where: { patientId: id } });
+        if (hasClinicalEncounters > 0) {
+          throw new ConflictException({
+            code: 'PATIENT_HAS_CLINICAL_ENCOUNTERS',
+            message: 'No se puede eliminar un paciente con consultas clínicas registradas.',
+          });
+        }
       }
       throw e;
     }

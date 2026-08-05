@@ -31,44 +31,37 @@ export class EncountersService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Autorización por Workspace (no por Patient.userId): resuelve el Workspace
-   * del paciente y exige que el usuario autenticado sea WorkspaceMember de ese
-   * Workspace. Un Patient inexistente, un Patient de otro Workspace, o un
-   * usuario sin membership en ese Workspace producen el mismo 404 -- nunca
-   * 403, para no filtrar cuál de esos casos ocurrió.
-   *
-   * Si el Patient existe pero todavía no tiene workspaceId (columna nullable
-   * hasta la Migración B, ver corte 1), no hay ningún Workspace contra el cual
-   * validar membership -- se rechaza con un error controlado
-   * (PATIENT_WORKSPACE_NOT_READY) en vez de crear el Encounter sin workspace o
-   * de dejar que Prisma lance un error crudo de FK.
+   * Autorización por Workspace (no por Patient.userId), resuelta en una sola
+   * consulta: un Patient inexistente, un Patient con workspaceId null
+   * (columna nullable hasta la Migración B, ver corte 1), un Patient de otro
+   * Workspace, y un usuario sin membership en ese Workspace son
+   * indistinguibles desde afuera -- los cuatro casos producen exactamente el
+   * mismo `patient === null` aquí y el mismo 404 en el llamador. Nunca 403,
+   * y nunca un código distinto (ej. "el paciente no tiene workspace") que
+   * permitiría a alguien sin ninguna relación con el paciente deducir su
+   * existencia o estado.
    */
-  private async resolveAccessiblePatientWorkspace(userId: string, patientId: string): Promise<{ workspaceId: string }> {
-    const patient = await this.prisma.patient.findUnique({
-      where: { id: patientId },
-      select: { id: true, workspaceId: true },
+  private async resolveAccessiblePatientWorkspace(userId: string, patientId: string): Promise<{ workspaceId: string } | null> {
+    const patient = await this.prisma.patient.findFirst({
+      where: { id: patientId, workspace: { members: { some: { userId } } } },
+      select: { workspaceId: true },
     });
-    if (!patient) throw new NotFoundException('Patient not found');
-
-    if (!patient.workspaceId) {
-      throw new ConflictException({
-        code: 'PATIENT_WORKSPACE_NOT_READY',
-        message: 'El paciente todavía no tiene un Workspace asociado.',
-      });
-    }
-
-    const membership = await this.prisma.workspaceMember.findUnique({
-      where: { workspaceId_userId: { workspaceId: patient.workspaceId, userId } },
-      select: { id: true },
-    });
-    if (!membership) throw new NotFoundException('Patient not found');
-
+    // patient.workspaceId no puede ser null aquí -- el filtro `workspace: {...}`
+    // sólo matchea cuando existe un Workspace con esa membership, pero Prisma
+    // sigue tipando el campo como nullable porque no lo sabe estáticamente.
+    if (!patient || !patient.workspaceId) return null;
     return { workspaceId: patient.workspaceId };
+  }
+
+  private async requireAccessiblePatientWorkspace(userId: string, patientId: string): Promise<{ workspaceId: string }> {
+    const access = await this.resolveAccessiblePatientWorkspace(userId, patientId);
+    if (!access) throw new NotFoundException('Patient not found');
+    return access;
   }
 
   // POST /patients/:patientId/encounters
   async create(userId: string, patientId: string, dto: CreateEncounterDto) {
-    const { workspaceId } = await this.resolveAccessiblePatientWorkspace(userId, patientId);
+    const { workspaceId } = await this.requireAccessiblePatientWorkspace(userId, patientId);
     const clinicalDate = parseClinicalDate(dto.clinicalDate);
 
     // Pre-chequeo rápido para el caso común (sin carrera): evita intentar el
@@ -135,14 +128,18 @@ export class EncountersService {
 
   // GET /patients/:patientId/encounters
   async findAllByPatient(userId: string, patientId: string, query: FindEncountersDto) {
-    await this.resolveAccessiblePatientWorkspace(userId, patientId);
+    await this.requireAccessiblePatientWorkspace(userId, patientId);
 
     const page = query.page || 1;
     const pageSize = query.pageSize || 10;
     const skip = (page - 1) * pageSize;
 
+    // El filtro de WorkspaceMember se repite aquí como defensa en profundidad
+    // -- la consulta que realmente devuelve datos nunca depende exclusivamente
+    // del chequeo de acceso hecho arriba.
     const where: Prisma.ClinicalEncounterWhereInput = {
       patientId,
+      workspace: { members: { some: { userId } } },
       ...(query.status ? { status: query.status } : {}),
       ...(query.profile ? { profile: query.profile } : {}),
       ...(query.type ? { type: query.type } : {}),

@@ -10,8 +10,7 @@ function buildPrismaMock() {
     encounterModuleState: { createMany: jest.fn() },
   };
   const prisma = {
-    patient: { findUnique: jest.fn() },
-    workspaceMember: { findUnique: jest.fn() },
+    patient: { findFirst: jest.fn() },
     clinicalEncounter: { findFirst: jest.fn(), findMany: jest.fn(), count: jest.fn() },
     // Soporta ambas formas de $transaction: callback (create/discard) y array (findAllByPatient).
     $transaction: jest.fn((arg: any) => (typeof arg === 'function' ? arg(tx) : Promise.all(arg))),
@@ -69,8 +68,7 @@ describe('EncountersService', () => {
 
   describe('create', () => {
     it('assigns the patient workspace and the authenticated user as responsible, creating exactly 9 modules in the same transaction', async () => {
-      prisma.patient.findUnique.mockResolvedValue({ id: 'patient-1', workspaceId: 'ws-1' });
-      prisma.workspaceMember.findUnique.mockResolvedValue({ id: 'member-1' });
+      prisma.patient.findFirst.mockResolvedValue({ workspaceId: 'ws-1' });
       prisma.clinicalEncounter.findFirst
         .mockResolvedValueOnce(null) // pre-chequeo: sin IN_PROGRESS existente
         .mockResolvedValueOnce(fullDetailFixture()); // findOneForPatient posterior al create
@@ -79,6 +77,10 @@ describe('EncountersService', () => {
 
       const result = await service.create('user-1', 'patient-1', VALID_DTO as any);
 
+      expect(prisma.patient.findFirst).toHaveBeenCalledWith({
+        where: { id: 'patient-1', workspace: { members: { some: { userId: 'user-1' } } } },
+        select: { workspaceId: true },
+      });
       expect(tx.clinicalEncounter.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           workspaceId: 'ws-1',
@@ -94,34 +96,31 @@ describe('EncountersService', () => {
       expect(result.id).toBe('enc-1');
     });
 
-    it('rejects a patient with workspaceId null with a controlled PATIENT_WORKSPACE_NOT_READY error, not a 500', async () => {
-      prisma.patient.findUnique.mockResolvedValue({ id: 'patient-1', workspaceId: null });
-
-      await expect(service.create('user-1', 'patient-1', VALID_DTO as any)).rejects.toThrow(ConflictException);
-      try {
-        await service.create('user-1', 'patient-1', VALID_DTO as any);
-        fail('expected to throw');
-      } catch (e: any) {
-        expect(e.getResponse().code).toBe('PATIENT_WORKSPACE_NOT_READY');
-      }
+    // Las 4 causas de acceso denegado son indistinguibles a propósito: todas
+    // producen el mismo `patient.findFirst` -> null -> el mismo 404, nunca un
+    // código que revele CUÁL de las 4 ocurrió (ver PATIENT_WORKSPACE_NOT_READY,
+    // removido explícitamente por ese motivo).
+    it('returns 404 (not a distinguishable error) when the patient does not exist', async () => {
+      prisma.patient.findFirst.mockResolvedValue(null);
+      await expect(service.create('user-1', 'patient-1', VALID_DTO as any)).rejects.toThrow(NotFoundException);
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
-    it('returns 404 when the patient does not exist', async () => {
-      prisma.patient.findUnique.mockResolvedValue(null);
+    it('returns 404 (not a distinguishable error) when the patient has workspaceId null', async () => {
+      // El propio filtro `workspace: { members: { some: ... } } }` no puede
+      // matchear una relación nula, así que Prisma real también devolvería
+      // null aquí -- se simula explícitamente para dejar el caso documentado.
+      prisma.patient.findFirst.mockResolvedValue(null);
       await expect(service.create('user-1', 'patient-1', VALID_DTO as any)).rejects.toThrow(NotFoundException);
     });
 
     it('returns 404 (not 403) when the authenticated user is not a member of the patient workspace', async () => {
-      prisma.patient.findUnique.mockResolvedValue({ id: 'patient-1', workspaceId: 'other-ws' });
-      prisma.workspaceMember.findUnique.mockResolvedValue(null);
-
+      prisma.patient.findFirst.mockResolvedValue(null);
       await expect(service.create('user-1', 'patient-1', VALID_DTO as any)).rejects.toThrow(NotFoundException);
     });
 
     it('returns 409 ENCOUNTER_ALREADY_IN_PROGRESS when the pre-check finds an existing open encounter', async () => {
-      prisma.patient.findUnique.mockResolvedValue({ id: 'patient-1', workspaceId: 'ws-1' });
-      prisma.workspaceMember.findUnique.mockResolvedValue({ id: 'member-1' });
+      prisma.patient.findFirst.mockResolvedValue({ workspaceId: 'ws-1' });
       prisma.clinicalEncounter.findFirst.mockResolvedValueOnce({ id: 'existing-enc' });
 
       await expect(service.create('user-1', 'patient-1', VALID_DTO as any)).rejects.toThrow(ConflictException);
@@ -129,8 +128,7 @@ describe('EncountersService', () => {
     });
 
     it('maps a P2002 raised by the DB partial unique index (race window) to 409 ENCOUNTER_ALREADY_IN_PROGRESS', async () => {
-      prisma.patient.findUnique.mockResolvedValue({ id: 'patient-1', workspaceId: 'ws-1' });
-      prisma.workspaceMember.findUnique.mockResolvedValue({ id: 'member-1' });
+      prisma.patient.findFirst.mockResolvedValue({ workspaceId: 'ws-1' });
       prisma.clinicalEncounter.findFirst.mockResolvedValueOnce(null); // el pre-chequeo no ve nada todavía
       const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
       tx.clinicalEncounter.create.mockRejectedValue(p2002);
@@ -140,9 +138,8 @@ describe('EncountersService', () => {
   });
 
   describe('findAllByPatient', () => {
-    it('checks workspace access before listing and orders deterministically by clinicalDate desc, startedAt desc, id desc', async () => {
-      prisma.patient.findUnique.mockResolvedValue({ id: 'patient-1', workspaceId: 'ws-1' });
-      prisma.workspaceMember.findUnique.mockResolvedValue({ id: 'member-1' });
+    it('checks workspace access before listing, orders deterministically, and repeats the WorkspaceMember filter in the where clause as defense in depth', async () => {
+      prisma.patient.findFirst.mockResolvedValue({ workspaceId: 'ws-1' });
       prisma.clinicalEncounter.findMany.mockResolvedValue([fullDetailFixture()]);
       prisma.clinicalEncounter.count.mockResolvedValue(1);
 
@@ -150,15 +147,17 @@ describe('EncountersService', () => {
 
       expect(prisma.clinicalEncounter.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
+          where: expect.objectContaining({
+            patientId: 'patient-1',
+            workspace: { members: { some: { userId: 'user-1' } } },
+          }),
           orderBy: [{ clinicalDate: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
         }),
       );
     });
 
     it('returns 404 for a patient in another workspace', async () => {
-      prisma.patient.findUnique.mockResolvedValue({ id: 'patient-1', workspaceId: 'other-ws' });
-      prisma.workspaceMember.findUnique.mockResolvedValue(null);
-
+      prisma.patient.findFirst.mockResolvedValue(null);
       await expect(service.findAllByPatient('user-1', 'patient-1', {} as any)).rejects.toThrow(NotFoundException);
     });
   });

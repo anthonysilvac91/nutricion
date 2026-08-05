@@ -246,10 +246,69 @@ describe('Encounters (e2e)', () => {
         .delete(`/patients/${patientId}`)
         .set('Authorization', `Bearer ${token}`)
         .expect(409);
-      expect(deleteRes.body.message?.code ?? deleteRes.body.code).toBeDefined();
+      const code = deleteRes.body.message?.code ?? deleteRes.body.code;
+      expect(code).toBe('PATIENT_HAS_CLINICAL_ENCOUNTERS');
 
       const stillThere = await prisma.clinicalEncounter.findUnique({ where: { id: createRes.body.id } });
       expect(stillThere).not.toBeNull();
+    });
+
+    it('does not mislabel a foreign-key conflict from another relation (Assessment) as PATIENT_HAS_CLINICAL_ENCOUNTERS', async () => {
+      const { token } = await registerNutritionist('del-other-fk');
+      const patientId = await createPatient(token, 'HasAssessmentOnly');
+
+      // Assessment referencia a Patient sin cascade (igual que antes de este corte) --
+      // el paciente no tiene ningún ClinicalEncounter.
+      await request(app.getHttpServer())
+        .post(`/patients/${patientId}/assessments`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ date: '2026-03-01T10:00:00.000Z', measurements: [{ definitionId: 'm_weight', numericValue: 80 }] })
+        .expect(201);
+
+      const encounterCount = await prisma.clinicalEncounter.count({ where: { patientId } });
+      expect(encounterCount).toBe(0);
+
+      const deleteRes = await request(app.getHttpServer()).delete(`/patients/${patientId}`).set('Authorization', `Bearer ${token}`);
+      expect(deleteRes.status).not.toBe(409);
+      const code = deleteRes.body.message?.code ?? deleteRes.body.code;
+      expect(code).not.toBe('PATIENT_HAS_CLINICAL_ENCOUNTERS');
+    });
+  });
+
+  describe('Patient with workspaceId null', () => {
+    it('returns 404 (not a distinguishable error) on create/list/detail', async () => {
+      const { token } = await registerNutritionist('null-workspace');
+      const patientId = await createPatient(token, 'NullWorkspace');
+      await prisma.patient.update({ where: { id: patientId }, data: { workspaceId: null } });
+
+      await request(app.getHttpServer())
+        .post(`/patients/${patientId}/encounters`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(createEncounterBody())
+        .expect(404);
+
+      await request(app.getHttpServer()).get(`/patients/${patientId}/encounters`).set('Authorization', `Bearer ${token}`).expect(404);
+    });
+  });
+
+  describe('Discard validation', () => {
+    it('rejects a discardReason made only of whitespace with 400', async () => {
+      const { token } = await registerNutritionist('discard-ws');
+      const patientId = await createPatient(token, 'DiscardWhitespace');
+      const createRes = await request(app.getHttpServer())
+        .post(`/patients/${patientId}/encounters`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(createEncounterBody())
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post(`/patients/${patientId}/encounters/${createRes.body.id}/discard`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ discardReason: '     ' })
+        .expect(400);
+
+      const stillInProgress = await prisma.clinicalEncounter.findUniqueOrThrow({ where: { id: createRes.body.id } });
+      expect(stillInProgress.status).toBe('IN_PROGRESS');
     });
   });
 
