@@ -59,9 +59,12 @@ export class PatientsService {
               })
             ).id;
 
+      // `update` repara explícitamente el rol a OWNER -- el dueño de un
+      // Workspace PERSONAL debe ser siempre OWNER de su propia membresía,
+      // igual que en prisma/backfill-workspaces.ts.
       await tx.workspaceMember.upsert({
         where: { workspaceId_userId: { workspaceId, userId } },
-        update: {},
+        update: { role: 'OWNER' },
         create: { workspaceId, userId, role: 'OWNER' },
       });
 

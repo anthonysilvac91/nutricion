@@ -38,11 +38,16 @@ async function ensurePersonalWorkspace(tx: Tx, userId: string): Promise<string> 
   return existing.id;
 }
 
-/** Idempotente vía @@unique([workspaceId, userId]) -- upsert nunca duplica. */
+/**
+ * Idempotente vía @@unique([workspaceId, userId]) -- upsert nunca duplica.
+ * `update` repara explícitamente el rol a OWNER: el dueño de un Workspace
+ * PERSONAL debe ser siempre OWNER de su propia membresía, incluso si una
+ * ejecución anómala anterior la dejó en PROFESSIONAL.
+ */
 async function ensureOwnerMembership(tx: Tx, workspaceId: string, userId: string): Promise<void> {
   await tx.workspaceMember.upsert({
     where: { workspaceId_userId: { workspaceId, userId } },
-    update: {},
+    update: { role: WorkspaceRole.OWNER },
     create: { workspaceId, userId, role: WorkspaceRole.OWNER },
   });
 }
