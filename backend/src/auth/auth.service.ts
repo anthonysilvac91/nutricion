@@ -88,14 +88,39 @@ export class AuthService {
     const passwordHash = await bcrypt.hash(password, 10);
     const trialEndsAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // +30 days
 
-    const user = await this.prisma.user.create({
-      data: {
-        email: normalizedEmail,
-        passwordHash,
-        role: UserRole.NUTRITIONIST,
-        subscriptionStatus: SubscriptionStatus.TRIALING,
-        trialEndsAt,
-      },
+    // El Workspace PERSONAL y su membresía OWNER se crean en la misma
+    // transacción que el User -- todo NUTRITIONIST nuevo nace con su
+    // Workspace, sin depender del fallback perezoso de PatientsService.create()
+    // (que sigue existiendo para usuarios previos a este cambio y otros casos
+    // no cubiertos, ej. ADMIN con pacientes). No hace falta el patrón
+    // INSERT ... ON CONFLICT del backfill/fallback: el usuario recién se creó
+    // en esta misma transacción, así que no puede haber ya un Workspace
+    // PERSONAL suyo con el que competir.
+    const user = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          email: normalizedEmail,
+          passwordHash,
+          role: UserRole.NUTRITIONIST,
+          subscriptionStatus: SubscriptionStatus.TRIALING,
+          trialEndsAt,
+        },
+      });
+
+      const workspace = await tx.workspace.create({
+        data: {
+          ownerUserId: created.id,
+          type: 'PERSONAL',
+          name: 'Espacio personal',
+          timezone: 'America/Santiago',
+        },
+      });
+
+      await tx.workspaceMember.create({
+        data: { workspaceId: workspace.id, userId: created.id, role: 'OWNER' },
+      });
+
+      return created;
     });
 
     const payload = { sub: user.id, email: user.email, role: user.role };

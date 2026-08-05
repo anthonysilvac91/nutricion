@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePatientDto } from './dto/create-patient.dto';
 import { UpdatePatientDto } from './dto/update-patient.dto';
@@ -14,16 +15,57 @@ export class PatientsService {
     private readonly calculationStrategies: CalculationStrategyRegistry,
   ) { }
 
-  create(userId: string, dto: CreatePatientDto) {
+  async create(userId: string, dto: CreatePatientDto) {
+    const workspaceId = await this.resolvePersonalWorkspaceId(userId);
     return this.prisma.patient.create({
       data: {
         userId,
+        workspaceId,
         firstName: dto.firstName,
         lastName: dto.lastName,
         sex: dto.sex,
         birthDate: new Date(dto.birthDate),
         activityLevel: dto.activityLevel,
       },
+    });
+  }
+
+  /**
+   * Resuelve el Workspace PERSONAL del usuario, creándolo de forma perezosa si
+   * todavía no existe -- los usuarios registrados antes del backfill de la
+   * fundación Workspace ya lo tienen; los usuarios nuevos lo obtienen aquí en
+   * su primer paciente. La idempotencia depende del índice único parcial
+   * "Workspace_one_personal_per_owner" (ownerUserId) WHERE type='PERSONAL':
+   * el INSERT ... ON CONFLICT lo usa como target explícito, igual que
+   * prisma/backfill-workspaces.ts (no dupliques esta lógica sin mantenerla en
+   * sync con ese script). Esto NO cambia autorización: el resto de este
+   * servicio sigue filtrando exclusivamente por userId.
+   */
+  private async resolvePersonalWorkspaceId(userId: string): Promise<string> {
+    return this.prisma.$transaction(async (tx) => {
+      const inserted = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO "Workspace" ("id", "ownerUserId", "type", "name", "timezone", "createdAt", "updatedAt")
+        VALUES (${randomUUID()}, ${userId}, 'PERSONAL', 'Espacio personal', 'America/Santiago', now(), now())
+        ON CONFLICT ("ownerUserId") WHERE "type" = 'PERSONAL' DO NOTHING
+        RETURNING "id"
+      `;
+      const workspaceId =
+        inserted.length > 0
+          ? inserted[0].id
+          : (
+              await tx.workspace.findFirstOrThrow({
+                where: { ownerUserId: userId, type: 'PERSONAL' },
+                select: { id: true },
+              })
+            ).id;
+
+      await tx.workspaceMember.upsert({
+        where: { workspaceId_userId: { workspaceId, userId } },
+        update: {},
+        create: { workspaceId, userId, role: 'OWNER' },
+      });
+
+      return workspaceId;
     });
   }
 

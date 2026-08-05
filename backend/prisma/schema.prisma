@@ -72,10 +72,14 @@ model Patient {
   assessments      Assessment[]
   nutritionalPlans NutritionalPlan[]
 
-  // Nullable en este commit (Migración A): PatientsService sigue autorizando
-  // por userId sin cambios; workspaceId se backfillea para todo Patient
-  // existente pero todavía no es la autoridad de acceso. La Migración B
-  // (commit siguiente) lo convierte en NOT NULL una vez verificado el backfill.
+  // Nullable en este release: la Migración B (NOT NULL) se despliega por
+  // separado, después de correr y verificar el backfill en producción (ver
+  // prisma/backfill-workspaces.ts y prisma/verify-workspace-backfill.ts).
+  // AuthService.register() crea el Workspace PERSONAL atómicamente para todo
+  // NUTRITIONIST nuevo; PatientsService.create() lo resuelve como fallback
+  // idempotente para cualquier caso no cubierto (usuarios previos al backfill,
+  // ADMIN con pacientes, etc.). Autorización sigue siendo por userId sin
+  // cambios -- workspaceId todavía no es la autoridad de acceso.
   workspaceId String?
   workspace   Workspace? @relation(fields: [workspaceId], references: [id])
 
