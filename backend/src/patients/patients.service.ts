@@ -1,5 +1,6 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePatientDto } from './dto/create-patient.dto';
 import { UpdatePatientDto } from './dto/update-patient.dto';
@@ -138,15 +139,37 @@ export class PatientsService {
   }
 
   async remove(userId: string, id: string) {
-    const deleteResult = await this.prisma.patient.deleteMany({
-      where: { id, userId },
-    });
+    try {
+      const deleteResult = await this.prisma.patient.deleteMany({
+        where: { id, userId },
+      });
 
-    if (deleteResult.count === 0) {
-      throw new NotFoundException('Patient not found');
+      if (deleteResult.count === 0) {
+        throw new NotFoundException('Patient not found');
+      }
+
+      return { message: 'Patient removed successfully' };
+    } catch (e) {
+      // ClinicalEncounter.patient usa onDelete: Restrict a propósito (corte 2 --
+      // una consulta clínica nunca debe desaparecer al eliminar el Patient),
+      // pero Patient también es referenciado (sin cascade) por Measurement,
+      // Result, Assessment y NutritionalPlan -- cualquiera de esas relaciones
+      // puede disparar el mismo P2003. Solo se etiqueta como
+      // PATIENT_HAS_CLINICAL_ENCOUNTERS cuando realmente existe al menos un
+      // ClinicalEncounter para este paciente; en cualquier otro caso se
+      // relanza el error original tal como se comportaba antes de este corte,
+      // sin inventar una causa que no es la real.
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
+        const hasClinicalEncounters = await this.prisma.clinicalEncounter.count({ where: { patientId: id } });
+        if (hasClinicalEncounters > 0) {
+          throw new ConflictException({
+            code: 'PATIENT_HAS_CLINICAL_ENCOUNTERS',
+            message: 'No se puede eliminar un paciente con consultas clínicas registradas.',
+          });
+        }
+      }
+      throw e;
     }
-
-    return { message: 'Patient removed successfully' };
   }
 
   // --- Endpoints Consolidados de Fase 3 (Lectura en base a Assessments) ---
