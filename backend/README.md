@@ -64,6 +64,48 @@ Seed demo:
 npx prisma db seed
 ```
 
+### Fundación Workspace (corte 1 de la fase Consulta Clínica)
+
+`Patient.workspaceId` es nullable en este release a propósito -- la migración
+que la vuelve `NOT NULL` se despliega por separado, en un release posterior,
+después de correr y verificar el backfill en producción. **No incluir esa
+migración en el mismo release que ejecuta el backfill.**
+
+Desde este release, todo `NUTRITIONIST` nuevo recibe su Workspace PERSONAL y
+su membresía OWNER atómicamente durante `POST /auth/register` (misma
+transacción que la creación del `User`). `PatientsService.create()` conserva
+una resolución perezosa e idempotente del Workspace como red de seguridad para
+cualquier caso no cubierto por el registro (usuarios creados antes de este
+cambio, `ADMIN` con pacientes, etc.).
+
+**Release 1 -- fundación + backfill (esta rama):**
+
+```bash
+# Crea Workspace, WorkspaceMember y Patient.workspaceId (nullable)
+npx prisma migrate deploy
+
+# Backfill idempotente: crea un Workspace PERSONAL por NUTRITIONIST y por
+# ADMIN con pacientes, y asocia cada Patient existente. Seguro de re-ejecutar.
+npx ts-node prisma/backfill-workspaces.ts
+
+# Verificación de solo lectura -- debe salir con código 0
+npx ts-node prisma/verify-workspace-backfill.ts
+```
+
+`backfill-workspaces.ts` y `verify-workspace-backfill.ts` no requieren ningún
+argumento y son seguros de ejecutar repetidamente (no duplican Workspaces ni
+memberships, no reasignan pacientes ya asociados). Antes de continuar al
+release 2, confirmar en producción que la verificación sale con código 0.
+
+**Release 2 -- migración NOT NULL (rama/PR separado, posterior):**
+
+Agregar y desplegar la migración que aplica `Patient.workspaceId NOT NULL`
+(con el guard que aborta si queda algún paciente sin workspace) solo después
+de que el release 1 lleve corriendo el tiempo suficiente para que el registro
+atómico y el fallback de `PatientsService.create()` hayan cubierto cualquier
+escritura nueva, y de que el backfill + verificación se hayan confirmado en
+producción.
+
 ## Ejecucion
 
 ```bash
