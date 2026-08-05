@@ -52,6 +52,9 @@ model User {
   ownedWorkspaces      Workspace[]       @relation("WorkspaceOwner")
   workspaceMemberships WorkspaceMember[]
 
+  // ClinicalEncounter (corte 2) -- consultas de las que este usuario es el profesional responsable.
+  responsibleEncounters ClinicalEncounter[] @relation("EncounterResponsibleProfessional")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -82,6 +85,10 @@ model Patient {
   // cambios -- workspaceId todavía no es la autoridad de acceso.
   workspaceId String?
   workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+
+  // ClinicalEncounter (corte 2). onDelete: Restrict en la FK del lado de ClinicalEncounter --
+  // una consulta clínica nunca debe desaparecer por eliminar el Patient (ver PatientsService.remove()).
+  encounters ClinicalEncounter[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -117,8 +124,9 @@ model Workspace {
   name     String
   timezone String        @default("America/Santiago")
 
-  members  WorkspaceMember[]
-  patients Patient[]
+  members    WorkspaceMember[]
+  patients   Patient[]
+  encounters ClinicalEncounter[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -149,6 +157,129 @@ model WorkspaceMember {
 
   @@unique([workspaceId, userId])
   @@index([userId])
+}
+
+// ----------------------------------------------------------------------
+// CLINICAL ENCOUNTER (corte 2 de la fase Consulta Clínica -- núcleo)
+// ----------------------------------------------------------------------
+// "Consulta" clínica real, agrupadora de la atención. Autorización desde el
+// día uno por Workspace (vía WorkspaceMember), no por Patient.userId -- ver
+// EncountersService. No existe estado DRAFT: crear = iniciar (IN_PROGRESS).
+// La transición a COMPLETED, completionSnapshot poblado, canComplete/
+// completionBlockers y la reconciliación de EncounterModuleState contra
+// Assessment/Plan/Anamnesis/Indicaciones llegan en cortes posteriores -- en
+// este corte solo existe IN_PROGRESS -> DISCARDED.
+enum ClinicalProfile {
+  ADULT_GENERAL
+  ADULT_SPORT
+  PEDIATRIC
+}
+
+enum EncounterType {
+  FIRST_VISIT
+  FOLLOW_UP
+  OTHER
+}
+
+enum EncounterStatus {
+  IN_PROGRESS
+  COMPLETED
+  DISCARDED
+}
+
+model ClinicalEncounter {
+  id String @id @default(uuid())
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  responsibleProfessionalId String
+  responsibleProfessional   User   @relation("EncounterResponsibleProfessional", fields: [responsibleProfessionalId], references: [id], onDelete: Restrict)
+
+  profile     ClinicalProfile
+  type        EncounterType
+  status      EncounterStatus @default(IN_PROGRESS)
+  flowVersion String // congelado al crear -- "foundation-v1" en este corte, ver encounters/foundation-flow.constants.ts
+
+  clinicalDate DateTime // YYYY-MM-DD anclado a 12:00 UTC, ver common/clinical-date.util.ts
+  startedAt    DateTime  @default(now())
+  completedAt  DateTime?
+  discardedAt  DateTime?
+
+  // Dos conceptos distintos, nunca el mismo campo: el motivo clínico original
+  // (consultationReason) no se sobrescribe jamás al descartar (discardReason).
+  consultationReason String?
+  discardReason      String?
+  notes              String?
+
+  // Poblado solo por complete() (corte 5) -- no existe endpoint que lo escriba en este corte.
+  completionSnapshot Json?
+
+  modules EncounterModuleState[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId, status, clinicalDate])
+  @@index([patientId, status, clinicalDate])
+  @@index([responsibleProfessionalId, status])
+}
+
+// + índice único parcial (SQL crudo en la migración, Prisma DSL no lo soporta,
+//   mismo caso ya documentado en Workspace/Assessment/NutritionalPlan):
+//   CREATE UNIQUE INDEX "ClinicalEncounter_one_in_progress_per_patient"
+//     ON "ClinicalEncounter" ("patientId") WHERE "status" = 'IN_PROGRESS';
+// + 7 CHECK constraints (ver migración) sobre completedAt/discardedAt/
+//   discardReason/completionSnapshot en función de status.
+
+enum EncounterModule {
+  SUMMARY
+  ANAMNESIS
+  MEASUREMENTS
+  REQUIREMENTS
+  PLANNING
+  MEAL_PLAN
+  INDICATIONS
+  REPORT
+  FOLLOW_UP
+}
+
+enum ModuleApplicability {
+  REQUIRED
+  OPTIONAL
+  NOT_APPLICABLE
+}
+
+enum ModuleStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  NOT_APPLICABLE
+}
+
+// Caché/proyección de progreso -- NUNCA la autoridad clínica. La reconciliación
+// contra Assessment/Plan/Anamnesis/Indicaciones llega en cortes posteriores; en
+// este corte el status se congela en la creación y no existe ningún endpoint
+// que lo modifique.
+model EncounterModuleState {
+  id          String            @id @default(uuid())
+  encounterId String
+  encounter   ClinicalEncounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+
+  module        EncounterModule
+  applicability ModuleApplicability
+  status        ModuleStatus
+
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([encounterId, module])
+  @@index([encounterId, status])
 }
 
 model Measurement {

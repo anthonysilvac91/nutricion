@@ -12,6 +12,7 @@ import { AdminModule } from './admin/admin.module';
 import { AssessmentsModule } from './assessments/assessments.module';
 import { PlansModule } from './plans/plans.module';
 import { FoodsModule } from './foods/foods.module';
+import { EncountersModule } from './encounters/encounters.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { FoodsModule } from './foods/foods.module';
     AssessmentsModule,
     PlansModule,
     FoodsModule,
+    EncountersModule,
   ],
   controllers: [
     AppController,
