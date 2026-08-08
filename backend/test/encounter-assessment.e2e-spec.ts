@@ -429,5 +429,136 @@ describe('Encounter Assessment (e2e)', () => {
       const final = await prisma.assessment.findUniqueOrThrow({ where: { id: assessment.body.id } });
       expect(final.status).toBe('COMPLETED');
     });
+
+    it('F: legacy createOrGetDraft vs encounter createOrGet racing on the same patient never produce two DRAFT, never 500, and the losing route never returns the winner\'s Assessment', async () => {
+      // Se repite varias veces (cada una con paciente/consulta nuevos) para
+      // ejercer ambos órdenes reales de la carrera contra el índice único
+      // parcial "un DRAFT por paciente". El camino encounter-scoped hace más
+      // round-trips antes de su propio INSERT (lock de ClinicalEncounter +
+      // 3 SELECT de pre-chequeo) que el legacy (1 SELECT), así que en una
+      // carrera perfectamente simultánea el legacy gana casi siempre -- eso
+      // por sí solo NO demuestra que el orden inverso esté bien manejado.
+      // Para ejercerlo también, la mitad de las iteraciones le da al legacy
+      // una ventaja de arranque artificial (unos ms), dejando que el
+      // encounter-scoped alcance a insertar primero; siguen siendo dos
+      // requests HTTP reales en vuelo, nunca secuenciales de punta a punta.
+      const outcomesSeen = new Set<'legacy-won' | 'encounter-won'>();
+
+      for (let i = 0; i < 8; i++) {
+        const { token } = await registerNutritionist(`concF${i}`);
+        const patientId = await createPatient(token, `ConcF${i}`);
+        const encounter = await createEncounter(token, patientId);
+
+        const sendLegacy = () => request(app.getHttpServer()).post(`/patients/${patientId}/assessments/draft`).set('Authorization', `Bearer ${token}`).send({});
+        const sendEncounter = () => request(app.getHttpServer()).post(assessmentPath(patientId, encounter.id)).set('Authorization', `Bearer ${token}`);
+        const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        const encounterPromise = sendEncounter();
+        const legacyPromise = i % 2 === 0 ? sendLegacy() : delay(25).then(sendLegacy);
+        const [legacyRes, encounterRes] = await Promise.all([legacyPromise, encounterPromise]);
+
+        // Nunca 500 en ninguno de los dos lados.
+        expect(legacyRes.status).not.toBe(500);
+        expect(encounterRes.status).not.toBe(500);
+
+        // Exactamente un DRAFT sobrevive para este paciente, sin importar quién ganó.
+        const draftCount = await prisma.assessment.count({ where: { patientId, status: 'DRAFT' } });
+        expect(draftCount).toBe(1);
+
+        if (legacyRes.status === 201) {
+          // Ganó el standalone: el encounter-scoped NUNCA debe reasignarlo
+          // silenciosamente, debe rechazar con el código de "borrador sin vincular".
+          outcomesSeen.add('legacy-won');
+          expect(encounterRes.status).toBe(409);
+          const code = encounterRes.body.message?.code ?? encounterRes.body.code;
+          expect(code).toBe('PATIENT_HAS_UNLINKED_DRAFT_ASSESSMENT');
+
+          const winner = await prisma.assessment.findFirstOrThrow({ where: { patientId, status: 'DRAFT' } });
+          expect(winner.encounterId).toBeNull();
+        } else {
+          // Ganó el encounter-scoped: la ruta legacy NUNCA debe devolver ese
+          // Assessment (ni como lectura), debe rechazar con ASSESSMENT_LINKED_TO_ENCOUNTER.
+          outcomesSeen.add('encounter-won');
+          expect(encounterRes.status).toBe(201);
+          expect(legacyRes.status).toBe(409);
+          const code = legacyRes.body.message?.code ?? legacyRes.body.code;
+          expect(code).toBe('ASSESSMENT_LINKED_TO_ENCOUNTER');
+
+          const winner = await prisma.assessment.findFirstOrThrow({ where: { patientId, status: 'DRAFT' } });
+          expect(winner.encounterId).toBe(encounter.id);
+        }
+      }
+
+      // No es un requisito estricto del test (el scheduling real decide), pero
+      // se registra para el informe: cuántas de las 8 repeticiones cayeron en
+      // cada orden, para documentar que ambos se ejercieron en la práctica.
+      // eslint-disable-next-line no-console
+      console.log('Escenario F -- órdenes observados en 8 repeticiones:', [...outcomesSeen]);
+    });
+  });
+
+  describe('GET encounter-assessment authorization hardening', () => {
+    it('returns 404 for a structurally inconsistent Encounter (Patient.workspaceId != Encounter.workspaceId), for callers on EITHER side -- never trusts membership of the Encounter\'s own workspace alone', async () => {
+      const userA = await registerNutritionist('inconsistentA');
+      const patientId = await createPatient(userA.token, 'InconsistentA');
+      const encounter = await createEncounter(userA.token, patientId);
+
+      const userB = await registerNutritionist('inconsistentB');
+      const patientBId = await createPatient(userB.token, 'InconsistentB');
+      const patientB = await prisma.patient.findUniqueOrThrow({ where: { id: patientBId } });
+
+      // Corrompemos deliberadamente el Encounter de A para que apunte al
+      // Workspace de B -- nunca alcanzable por la API real (Patient.workspaceId
+      // y ClinicalEncounter.workspaceId siempre se asignan juntos en create()),
+      // se fuerza directo en la BD para simular el dato inconsistente.
+      await prisma.clinicalEncounter.update({ where: { id: encounter.id }, data: { workspaceId: patientB.workspaceId } });
+
+      // Ni el dueño original (cuyo Workspace ya no coincide con el Encounter
+      // corrompido) ni un miembro del Workspace al que ahora "apunta" el
+      // Encounter (pero que no es el Workspace real del Patient) pueden acceder.
+      await request(app.getHttpServer()).get(assessmentPath(patientId, encounter.id)).set('Authorization', `Bearer ${userA.token}`).expect(404);
+      await request(app.getHttpServer()).get(assessmentPath(patientId, encounter.id)).set('Authorization', `Bearer ${userB.token}`).expect(404);
+
+      // Las mutaciones ya usaban el mismo JOIN vía lockEncounterForWrite --
+      // se confirma que siguen consistentes con el GET recién corregido.
+      await request(app.getHttpServer())
+        .patch(assessmentPath(patientId, encounter.id) + '/measurements')
+        .set('Authorization', `Bearer ${userA.token}`)
+        .send({ measurements: [{ definitionId: 'm_weight', numericValue: 70 }] })
+        .expect(404);
+      await request(app.getHttpServer()).post(assessmentPath(patientId, encounter.id) + '/complete').set('Authorization', `Bearer ${userB.token}`).expect(404);
+    });
+  });
+
+  describe('MEASUREMENTS module state reconciliation hardening', () => {
+    it('rolls back the entire completion when EncounterModuleState.MEASUREMENTS is missing/corrupted -- Assessment stays DRAFT and no CalculatedResult is created', async () => {
+      const { token } = await registerNutritionist('modulemissing');
+      const patientId = await createPatient(token, 'ModuleMissing');
+      const encounter = await createEncounter(token, patientId);
+      const assessment = await request(app.getHttpServer()).post(assessmentPath(patientId, encounter.id)).set('Authorization', `Bearer ${token}`).expect(201);
+      await request(app.getHttpServer())
+        .patch(assessmentPath(patientId, encounter.id) + '/measurements')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ measurements: [{ definitionId: 'm_weight', numericValue: 70 }] })
+        .expect(200);
+
+      // Un ClinicalEncounter válido de foundation-v1 siempre nace con su fila
+      // EncounterModuleState.MEASUREMENTS -- esto nunca ocurre por la API real,
+      // se borra directo en la BD para simular la inconsistencia deliberada.
+      await prisma.encounterModuleState.delete({
+        where: { encounterId_module: { encounterId: encounter.id, module: 'MEASUREMENTS' } },
+      });
+
+      const res = await request(app.getHttpServer()).post(assessmentPath(patientId, encounter.id) + '/complete').set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(409);
+      const code = res.body.message?.code ?? res.body.code;
+      expect(code).toBe('ENCOUNTER_MODULE_STATE_MISSING');
+
+      // Rollback completo: el Assessment nunca quedó a medio completar.
+      const finalAssessment = await prisma.assessment.findUniqueOrThrow({ where: { id: assessment.body.id }, include: { results: true } });
+      expect(finalAssessment.status).toBe('DRAFT');
+      expect(finalAssessment.completedAt).toBeNull();
+      expect(finalAssessment.results).toHaveLength(0);
+    });
   });
 });

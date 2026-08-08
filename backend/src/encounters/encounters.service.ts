@@ -33,24 +33,21 @@ export class EncountersService {
 
   /**
    * Autorización por Workspace (no por Patient.userId), resuelta en una sola
-   * consulta: un Patient inexistente, un Patient con workspaceId null
-   * (columna nullable hasta la Migración B, ver corte 1), un Patient de otro
-   * Workspace, y un usuario sin membership en ese Workspace son
-   * indistinguibles desde afuera -- los cuatro casos producen exactamente el
-   * mismo `patient === null` aquí y el mismo 404 en el llamador. Nunca 403,
-   * y nunca un código distinto (ej. "el paciente no tiene workspace") que
-   * permitiría a alguien sin ninguna relación con el paciente deducir su
-   * existencia o estado.
+   * consulta: un Patient inexistente, un Patient de otro Workspace, y un
+   * usuario sin membership en ese Workspace son indistinguibles desde afuera
+   * -- los tres casos producen exactamente el mismo `patient === null` aquí y
+   * el mismo 404 en el llamador. Nunca 403, y nunca un código distinto (ej.
+   * "el paciente no tiene workspace") que permitiría a alguien sin ninguna
+   * relación con el paciente deducir su existencia o estado.
    */
   private async resolveAccessiblePatientWorkspace(userId: string, patientId: string): Promise<{ workspaceId: string } | null> {
     const patient = await this.prisma.patient.findFirst({
       where: { id: patientId, workspace: { members: { some: { userId } } } },
       select: { workspaceId: true },
     });
-    // patient.workspaceId no puede ser null aquí -- el filtro `workspace: {...}`
-    // sólo matchea cuando existe un Workspace con esa membership, pero Prisma
-    // sigue tipando el campo como nullable porque no lo sabe estáticamente.
-    if (!patient || !patient.workspaceId) return null;
+    // Patient.workspaceId es NOT NULL desde la Migración B (ver corte 1) -- ya
+    // no hace falta contemplar un Patient sin Workspace.
+    if (!patient) return null;
     return { workspaceId: patient.workspaceId };
   }
 
@@ -61,26 +58,57 @@ export class EncountersService {
   }
 
   /**
+   * Fragmento de autorización compartido por toda consulta encounter-scoped
+   * (lectura o escritura): existencia, pertenencia al paciente, consistencia
+   * Patient.workspaceId = Encounter.workspaceId, y membership del usuario en
+   * ese Workspace. Nunca se confía únicamente en la membership del Workspace
+   * del Encounter -- si Patient.workspaceId y Encounter.workspaceId
+   * divergieran (dato inconsistente), este JOIN los hace indistinguibles de
+   * "no existe" y produce 404 en ambos casos.
+   */
+  private encounterAccessJoin(userId: string, patientId: string, encounterId: string) {
+    return Prisma.sql`
+      FROM "ClinicalEncounter" e
+      JOIN "Patient" p ON p.id = e."patientId" AND p."workspaceId" = e."workspaceId"
+      JOIN "WorkspaceMember" m ON m."workspaceId" = e."workspaceId" AND m."userId" = ${userId}
+      WHERE e.id = ${encounterId} AND e."patientId" = ${patientId}
+    `;
+  }
+
+  /**
    * Lock compartido de ClinicalEncounter para cualquier operación de escritura
    * encounter-scoped (discard aquí, y EncounterAssessmentService en el corte 3).
-   * Combina en una sola consulta: existencia, pertenencia al paciente,
-   * consistencia Patient.workspaceId = Encounter.workspaceId, membership del
-   * usuario en ese Workspace, y el lock de fila -- mismo patrón que
-   * AssessmentsService.lockDraftAssessment / PlansService.lockPlanRow.
+   * Mismo JOIN de autorización que findAccessibleEncounterForRead, con
+   * FOR UPDATE OF e -- mismo patrón que AssessmentsService.lockDraftAssessment
+   * / PlansService.lockPlanRow.
    *
    * Orden estable de locks para operaciones que necesitan Encounter + Assessment:
    * 1) ClinicalEncounter (este método), 2) Assessment -- siempre en ese orden,
    * para no exponernos a deadlocks entre distintas operaciones concurrentes.
    */
   async lockEncounterForWrite(tx: Prisma.TransactionClient, userId: string, patientId: string, encounterId: string) {
-    const rows = await tx.$queryRaw<{ id: string; status: string; clinicalDate: Date }[]>`
+    const rows = await tx.$queryRaw<{ id: string; status: string; clinicalDate: Date }[]>(Prisma.sql`
       SELECT e.id, e.status, e."clinicalDate"
-      FROM "ClinicalEncounter" e
-      JOIN "Patient" p ON p.id = e."patientId" AND p."workspaceId" = e."workspaceId"
-      JOIN "WorkspaceMember" m ON m."workspaceId" = e."workspaceId" AND m."userId" = ${userId}
-      WHERE e.id = ${encounterId} AND e."patientId" = ${patientId}
+      ${this.encounterAccessJoin(userId, patientId, encounterId)}
       FOR UPDATE OF e
-    `;
+    `);
+    const encounter = rows[0];
+    if (!encounter) throw new NotFoundException('Encounter not found');
+    return encounter;
+  }
+
+  /**
+   * Misma autorización que lockEncounterForWrite pero sin lock de fila y sin
+   * requerir una transacción -- para rutas de solo lectura encounter-scoped
+   * (ej. GET .../assessment) que deben validar exactamente la misma
+   * consistencia estructural que las mutaciones, sin pagar el costo de un
+   * FOR UPDATE innecesario para una lectura.
+   */
+  async findAccessibleEncounterForRead(userId: string, patientId: string, encounterId: string) {
+    const rows = await this.prisma.$queryRaw<{ id: string; status: string; clinicalDate: Date }[]>(Prisma.sql`
+      SELECT e.id, e.status, e."clinicalDate"
+      ${this.encounterAccessJoin(userId, patientId, encounterId)}
+    `);
     const encounter = rows[0];
     if (!encounter) throw new NotFoundException('Encounter not found');
     return encounter;
@@ -90,10 +118,19 @@ export class EncountersService {
    * Reconcilia EncounterModuleState(module=MEASUREMENTS) contra el estado real
    * del Assessment asociado -- Assessment es la autoridad clínica,
    * EncounterModuleState es solo una proyección de progreso (ver corte 2/3).
-   * No permite modificar un módulo cuya applicability sea NOT_APPLICABLE (no
-   * debería ocurrir con foundation-v1 hoy, pero no se acopla rígidamente a esa
-   * suposición: si una matriz futura lo vuelve NOT_APPLICABLE, esta llamada es
-   * un no-op silencioso en vez de forzar un estado incoherente).
+   *
+   * Un ClinicalEncounter válido de foundation-v1 SIEMPRE nace con su fila
+   * EncounterModuleState.MEASUREMENTS (ver create() + foundation-flow.constants).
+   * Si esa fila no existe, no es un caso normal de negocio -- es una
+   * inconsistencia de datos, y silenciarla permitiría completar un Assessment
+   * (efecto clínico real) perdiendo para siempre la proyección de progreso de
+   * la consulta. Se trata como error: lanza y deja que la transacción llamante
+   * (createOrGet/complete) haga ROLLBACK completo, así el Assessment nunca
+   * queda a medio completar cuando el módulo no puede reconciliarse.
+   *
+   * applicability === NOT_APPLICABLE sí es un caso normal (no debería ocurrir
+   * con foundation-v1 hoy, pero esta llamada no se acopla rígidamente a esa
+   * suposición): es un no-op permitido, nunca un error.
    */
   async reconcileMeasurementsModule(
     tx: Prisma.TransactionClient,
@@ -104,7 +141,13 @@ export class EncountersService {
     const moduleState = await tx.encounterModuleState.findUnique({
       where: { encounterId_module: { encounterId, module: EncounterModule.MEASUREMENTS } },
     });
-    if (!moduleState || moduleState.applicability === 'NOT_APPLICABLE') return;
+    if (!moduleState) {
+      throw new ConflictException({
+        code: 'ENCOUNTER_MODULE_STATE_MISSING',
+        message: 'No se encontró el estado del módulo MEASUREMENTS para esta consulta; no se puede reconciliar el progreso.',
+      });
+    }
+    if (moduleState.applicability === 'NOT_APPLICABLE') return;
 
     await tx.encounterModuleState.update({
       where: { encounterId_module: { encounterId, module: EncounterModule.MEASUREMENTS } },

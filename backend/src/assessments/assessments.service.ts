@@ -298,8 +298,19 @@ export class AssessmentsService {
             return this.findOneForPatient(userId, patientId, created.id);
         } catch (e) {
             if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-                // Otra request ya creó el DRAFT (carrera con el índice único parcial de la BD).
+                // Otra request ya creó el DRAFT (carrera con el índice único parcial de la BD:
+                // "un DRAFT por paciente"). Esa request ganadora puede haber sido una
+                // POST .../encounters/:encounterId/assessment concurrente -- si el
+                // ganador quedó ligado a un ClinicalEncounter, esta ruta legacy NUNCA
+                // debe devolverlo (ni su lectura), igual que ya rechaza el caso
+                // no-concurrente de arriba (`existing.encounterId`).
                 const winner = await this.prisma.assessment.findFirstOrThrow({ where: { patientId, status: 'DRAFT' } });
+                if (winner.encounterId) {
+                    throw new ConflictException({
+                        code: 'ASSESSMENT_LINKED_TO_ENCOUNTER',
+                        message: 'El borrador activo de este paciente pertenece a una consulta clínica; usa las rutas de la consulta para acceder a él.',
+                    });
+                }
                 return this.findOneForPatient(userId, patientId, winner.id);
             }
             throw e;

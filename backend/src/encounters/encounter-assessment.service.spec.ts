@@ -20,11 +20,13 @@ function buildMocks() {
   };
   const prisma = {
     clinicalEncounter: { findFirst: jest.fn() },
+    assessment: { findFirst: jest.fn(), findUnique: jest.fn() },
     $transaction: jest.fn((arg: any) => (typeof arg === 'function' ? arg(tx) : Promise.all(arg))),
   };
   const encounters = {
     lockEncounterForWrite: jest.fn(),
     reconcileMeasurementsModule: jest.fn(),
+    findAccessibleEncounterForRead: jest.fn(),
   };
   const assessments = {
     mapToUiResponse: jest.fn((a: any) => ({ mapped: true, ...a })),
@@ -82,17 +84,69 @@ describe('EncounterAssessmentService', () => {
       expect(result.id).toBe('assessment-1');
     });
 
-    it('two concurrent creates resolve to a single Assessment via the P2002 race path (belt-and-suspenders on top of the row lock)', async () => {
+    it('two concurrent creates for the SAME encounter resolve to a single Assessment via the P2002 race path, resolved OUTSIDE the aborted transaction', async () => {
       mocks.encounters.lockEncounterForWrite.mockResolvedValue(IN_PROGRESS_ENCOUNTER);
       mocks.tx.assessment.findUnique.mockResolvedValue(null);
       mocks.tx.assessment.findFirst.mockResolvedValue(null);
       const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
       mocks.tx.assessment.create.mockRejectedValue(p2002);
-      mocks.tx.assessment.findUniqueOrThrow.mockResolvedValue({ id: 'winning-assessment', status: 'DRAFT', measurements: [], results: [] });
+      // El ganador se resuelve con `this.prisma` (NO con `tx`, que ya está
+      // abortado tras el P2002) -- si el código intentara reconsultar con
+      // `tx.assessment.findUniqueOrThrow` (no mockeado en este test), el mock
+      // devolvería `undefined` y el test fallaría, exponiendo la regresión.
+      mocks.prisma.assessment.findFirst.mockResolvedValue({ id: 'winning-assessment', encounterId: 'enc-1', status: 'DRAFT', measurements: [], results: [] });
 
       const result = await service.createOrGet('user-1', 'patient-1', 'enc-1');
 
+      expect(mocks.prisma.assessment.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { patientId: 'patient-1', status: 'DRAFT' } }),
+      );
       expect(result.id).toBe('winning-assessment');
+    });
+
+    it('P2002 race lost against the LEGACY standalone route: winner has encounterId === null -> 409 PATIENT_HAS_UNLINKED_DRAFT_ASSESSMENT', async () => {
+      mocks.encounters.lockEncounterForWrite.mockResolvedValue(IN_PROGRESS_ENCOUNTER);
+      mocks.tx.assessment.findUnique.mockResolvedValue(null);
+      mocks.tx.assessment.findFirst.mockResolvedValue(null);
+      const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
+      mocks.tx.assessment.create.mockRejectedValue(p2002);
+      mocks.prisma.assessment.findFirst.mockResolvedValue({ id: 'legacy-draft', encounterId: null, status: 'DRAFT' });
+
+      try {
+        await service.createOrGet('user-1', 'patient-1', 'enc-1');
+        fail('expected to throw');
+      } catch (e: any) {
+        expect(e).toBeInstanceOf(ConflictException);
+        expect(e.getResponse().code).toBe('PATIENT_HAS_UNLINKED_DRAFT_ASSESSMENT');
+      }
+    });
+
+    it('P2002 race lost against ANOTHER encounter: winner has a different encounterId -> 409 PATIENT_HAS_OTHER_DRAFT_ASSESSMENT', async () => {
+      mocks.encounters.lockEncounterForWrite.mockResolvedValue(IN_PROGRESS_ENCOUNTER);
+      mocks.tx.assessment.findUnique.mockResolvedValue(null);
+      mocks.tx.assessment.findFirst.mockResolvedValue(null);
+      const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
+      mocks.tx.assessment.create.mockRejectedValue(p2002);
+      mocks.prisma.assessment.findFirst.mockResolvedValue({ id: 'other-encounter-draft', encounterId: 'enc-2', status: 'DRAFT' });
+
+      try {
+        await service.createOrGet('user-1', 'patient-1', 'enc-1');
+        fail('expected to throw');
+      } catch (e: any) {
+        expect(e).toBeInstanceOf(ConflictException);
+        expect(e.getResponse().code).toBe('PATIENT_HAS_OTHER_DRAFT_ASSESSMENT');
+      }
+    });
+
+    it('P2002 race with no resolvable winner (transient window) never crashes to 500 -- reports a conflict instead', async () => {
+      mocks.encounters.lockEncounterForWrite.mockResolvedValue(IN_PROGRESS_ENCOUNTER);
+      mocks.tx.assessment.findUnique.mockResolvedValue(null);
+      mocks.tx.assessment.findFirst.mockResolvedValue(null);
+      const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
+      mocks.tx.assessment.create.mockRejectedValue(p2002);
+      mocks.prisma.assessment.findFirst.mockResolvedValue(null);
+
+      await expect(service.createOrGet('user-1', 'patient-1', 'enc-1')).rejects.toThrow(ConflictException);
     });
 
     it('returns 409 PATIENT_HAS_UNLINKED_DRAFT_ASSESSMENT when the patient has a standalone DRAFT, never adopting it silently', async () => {
@@ -146,13 +200,25 @@ describe('EncounterAssessmentService', () => {
 
   describe('findOne', () => {
     it('returns 404 when the encounter has no Assessment yet', async () => {
-      mocks.prisma.clinicalEncounter.findFirst.mockResolvedValue({ id: 'enc-1', assessment: null });
+      mocks.encounters.findAccessibleEncounterForRead.mockResolvedValue({ id: 'enc-1', status: 'IN_PROGRESS' });
+      mocks.prisma.assessment.findUnique.mockResolvedValue(null);
       await expect(service.findOne('user-1', 'patient-1', 'enc-1')).rejects.toThrow(NotFoundException);
     });
 
-    it('returns 404 for cross-workspace access', async () => {
-      mocks.prisma.clinicalEncounter.findFirst.mockResolvedValue(null);
+    it('returns 404 for cross-workspace / structurally inconsistent access, delegated to EncountersService.findAccessibleEncounterForRead', async () => {
+      mocks.encounters.findAccessibleEncounterForRead.mockRejectedValue(new NotFoundException('Encounter not found'));
       await expect(service.findOne('user-1', 'patient-1', 'enc-1')).rejects.toThrow(NotFoundException);
+      expect(mocks.prisma.assessment.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('returns the mapped Assessment when access is valid and it exists', async () => {
+      mocks.encounters.findAccessibleEncounterForRead.mockResolvedValue({ id: 'enc-1', status: 'IN_PROGRESS' });
+      mocks.prisma.assessment.findUnique.mockResolvedValue({ id: 'assessment-1', status: 'DRAFT', measurements: [], results: [] });
+
+      const result = await service.findOne('user-1', 'patient-1', 'enc-1');
+
+      expect(mocks.encounters.findAccessibleEncounterForRead).toHaveBeenCalledWith('user-1', 'patient-1', 'enc-1');
+      expect(result.id).toBe('assessment-1');
     });
   });
 

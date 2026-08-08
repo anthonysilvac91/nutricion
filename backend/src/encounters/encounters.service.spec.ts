@@ -13,6 +13,8 @@ function buildPrismaMock() {
   const prisma = {
     patient: { findFirst: jest.fn() },
     clinicalEncounter: { findFirst: jest.fn(), findMany: jest.fn(), count: jest.fn() },
+    // Usado por findAccessibleEncounterForRead (lectura sin lock, fuera de una transacción).
+    $queryRaw: jest.fn(),
     // Soporta ambas formas de $transaction: callback (create/discard) y array (findAllByPatient).
     $transaction: jest.fn((arg: any) => (typeof arg === 'function' ? arg(tx) : Promise.all(arg))),
   };
@@ -278,6 +280,34 @@ describe('EncountersService', () => {
       await service.reconcileMeasurementsModule(tx as any, 'enc-1', 'COMPLETED', new Date());
 
       expect(tx.encounterModuleState.update).not.toHaveBeenCalled();
+    });
+
+    it('throws (never a silent no-op) when the MEASUREMENTS EncounterModuleState row is missing -- a valid foundation-v1 encounter always has one', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue(null);
+
+      await expect(service.reconcileMeasurementsModule(tx as any, 'enc-1', 'COMPLETED', new Date())).rejects.toMatchObject({
+        response: { code: 'ENCOUNTER_MODULE_STATE_MISSING' },
+      });
+      expect(tx.encounterModuleState.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('findAccessibleEncounterForRead', () => {
+    it('returns the encounter row when the join (Encounter/Patient/WorkspaceMember) resolves', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ id: 'enc-1', status: 'IN_PROGRESS', clinicalDate: new Date('2026-08-04T12:00:00.000Z') }]);
+
+      const result = await service.findAccessibleEncounterForRead('user-1', 'patient-1', 'enc-1');
+
+      expect(result.id).toBe('enc-1');
+    });
+
+    it('returns 404 when the join resolves nothing -- covers cross-workspace access AND a structurally inconsistent row (Patient.workspaceId != Encounter.workspaceId)', async () => {
+      // El JOIN exige p."workspaceId" = e."workspaceId" -- un registro con esos
+      // valores distintos nunca matchea, exactamente igual que un acceso
+      // cross-workspace legítimo: ambos casos son indistinguibles desde afuera.
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await expect(service.findAccessibleEncounterForRead('user-1', 'patient-1', 'enc-1')).rejects.toThrow(NotFoundException);
     });
   });
 });
