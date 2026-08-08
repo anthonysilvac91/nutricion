@@ -18,8 +18,12 @@ export class AssessmentsService {
         private readonly engine: ClinicalCalculationEngineService,
     ) { }
 
-    /** Pure shape validation -- no DB access, safe to call before opening a transaction. */
-    private validateMeasurementsShape(measurements: MeasurementRecordDto[]): void {
+    /**
+     * Pure shape validation -- no DB access, safe to call before opening a transaction.
+     * No `private`: reutilizado tal cual por EncounterAssessmentService (corte 3) para el
+     * flujo encounter-scoped -- única autoridad de validación de forma, sin duplicarla.
+     */
+    validateMeasurementsShape(measurements: MeasurementRecordDto[]): void {
         if (!measurements || measurements.length === 0) {
             throw new BadRequestException('At least one measurement is required');
         }
@@ -51,8 +55,12 @@ export class AssessmentsService {
         }
     }
 
-    /** DB-backed catalog check -- accepts either the plain PrismaService or an interactive transaction's client, so it can run inside a lock. */
-    private async assertDefinitionsUsable(client: PrismaClientOrTx, measurements: MeasurementRecordDto[]): Promise<void> {
+    /**
+     * DB-backed catalog check -- accepts either the plain PrismaService or an interactive
+     * transaction's client, so it can run inside a lock. No `private`: reutilizado tal cual por
+     * EncounterAssessmentService (corte 3).
+     */
+    async assertDefinitionsUsable(client: PrismaClientOrTx, measurements: MeasurementRecordDto[]): Promise<void> {
         const definitionIds = measurements.map(m => m.definitionId);
         const existingDefinitions = await client.measurementDefinition.findMany({
             where: { id: { in: definitionIds }, isActive: true },
@@ -72,10 +80,16 @@ export class AssessmentsService {
      * one atomic step. Any other upsert/remove/complete call for the same assessment blocks
      * until this transaction commits or rolls back, then re-reads the committed state -- this
      * is what actually prevents the "checked DRAFT, then someone else completed it" race.
+     *
+     * Corte 3: rechaza explícitamente un Assessment con encounterId no nulo. Las rutas legacy
+     * (userId-scoped) nunca deben poder mutar un Assessment ligado a un ClinicalEncounter --
+     * eso permitiría saltarse la autorización por Workspace, el estado del Encounter y la
+     * reconciliación de EncounterModuleState. Esas mutaciones solo pueden hacerse mediante las
+     * rutas encounter-scoped (EncounterAssessmentService), que usan su propio lock.
      */
     private async lockDraftAssessment(tx: Prisma.TransactionClient, userId: string, patientId: string, assessmentId: string) {
-        const rows = await tx.$queryRaw<{ id: string; status: string }[]>`
-            SELECT a.id, a.status
+        const rows = await tx.$queryRaw<{ id: string; status: string; encounterId: string | null }[]>`
+            SELECT a.id, a.status, a."encounterId"
             FROM "Assessment" a
             JOIN "Patient" p ON p.id = a."patientId"
             WHERE a.id = ${assessmentId} AND a."patientId" = ${patientId} AND p."userId" = ${userId}
@@ -83,6 +97,12 @@ export class AssessmentsService {
         `;
         const assessment = rows[0];
         if (!assessment) throw new NotFoundException('Assessment not found');
+        if (assessment.encounterId) {
+            throw new ConflictException({
+                code: 'ASSESSMENT_LINKED_TO_ENCOUNTER',
+                message: 'Este Assessment pertenece a una consulta clínica; usa las rutas de la consulta para modificarlo.',
+            });
+        }
         if (assessment.status !== 'DRAFT') throw new ConflictException('Assessment is no longer a DRAFT');
         return assessment;
     }
@@ -146,20 +166,7 @@ export class AssessmentsService {
             // Insert Calculated Results
             if (calculatedResults.length > 0) {
                 await tx.calculatedResult.createMany({
-                    data: calculatedResults.map(r => ({
-                        assessmentId: assessment.id,
-                        metricId: r.metricId,
-                        numericValue: r.numericValue,
-                        stringValue: r.stringValue,
-                        metadataAsJson: r.metadataAsJson as any,
-                        status: r.status,
-                        statusCode: r.statusCode,
-                        statusLabel: r.statusLabel,
-                        formulaUsed: r.formulaUsed,
-                        formulaVersion: r.formulaVersion,
-                        referenceTableId: r.referenceTableId,
-                        engineVersion: r.engineVersion,
-                    }))
+                    data: this.buildCalculatedResultRows(assessment.id, calculatedResults),
                 });
             }
 
@@ -167,6 +174,28 @@ export class AssessmentsService {
         });
 
         return this.findOne(userId, newAssessment.id);
+    }
+
+    /**
+     * Única construcción de filas CalculatedResult a partir de la salida del motor clínico --
+     * reutilizada por create()/complete() aquí y por EncounterAssessmentService.complete()
+     * (corte 3). No dupliques este mapeo en otro lugar.
+     */
+    buildCalculatedResultRows(assessmentId: string, results: EngineResult[]) {
+        return results.map(r => ({
+            assessmentId,
+            metricId: r.metricId,
+            numericValue: r.numericValue,
+            stringValue: r.stringValue,
+            metadataAsJson: r.metadataAsJson as any,
+            status: r.status,
+            statusCode: r.statusCode,
+            statusLabel: r.statusLabel,
+            formulaUsed: r.formulaUsed,
+            formulaVersion: r.formulaVersion,
+            referenceTableId: r.referenceTableId,
+            engineVersion: r.engineVersion,
+        }));
     }
 
     async findOne(userId: string, id: string) {
@@ -245,7 +274,18 @@ export class AssessmentsService {
         if (!patient) throw new NotFoundException('Patient not found');
 
         const existing = await this.prisma.assessment.findFirst({ where: { patientId, status: 'DRAFT' } });
-        if (existing) return this.findOneForPatient(userId, patientId, existing.id);
+        if (existing) {
+            // Corte 3: el DRAFT activo del paciente pertenece a un ClinicalEncounter -- la ruta
+            // legacy no debe devolverlo ni mucho menos permitir mutarlo por esta vía (ver
+            // lockDraftAssessment). El caller debe usar las rutas encounter-scoped.
+            if (existing.encounterId) {
+                throw new ConflictException({
+                    code: 'ASSESSMENT_LINKED_TO_ENCOUNTER',
+                    message: 'El borrador activo de este paciente pertenece a una consulta clínica; usa las rutas de la consulta para acceder a él.',
+                });
+            }
+            return this.findOneForPatient(userId, patientId, existing.id);
+        }
 
         try {
             const created = await this.prisma.assessment.create({
@@ -348,20 +388,7 @@ export class AssessmentsService {
 
             if (calculatedResults.length > 0) {
                 await tx.calculatedResult.createMany({
-                    data: calculatedResults.map(r => ({
-                        assessmentId,
-                        metricId: r.metricId,
-                        numericValue: r.numericValue,
-                        stringValue: r.stringValue,
-                        metadataAsJson: r.metadataAsJson as any,
-                        status: r.status,
-                        statusCode: r.statusCode,
-                        statusLabel: r.statusLabel,
-                        formulaUsed: r.formulaUsed,
-                        formulaVersion: r.formulaVersion,
-                        referenceTableId: r.referenceTableId,
-                        engineVersion: r.engineVersion,
-                    })),
+                    data: this.buildCalculatedResultRows(assessmentId, calculatedResults),
                 });
             }
 
@@ -392,7 +419,8 @@ export class AssessmentsService {
         });
     }
 
-    private mapToUiResponse(assessment: any) {
+    /** No `private`: mismo shape clínico/UI reutilizado por EncounterAssessmentService (corte 3) -- no crear una segunda representación. */
+    mapToUiResponse(assessment: any) {
         // We map results to inject colors dynamically
         const resultsUi = assessment.results.map((r: any) => {
             let uiTone = 'neutral';

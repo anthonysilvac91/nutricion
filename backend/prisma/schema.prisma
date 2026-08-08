@@ -224,6 +224,11 @@ model ClinicalEncounter {
 
   modules EncounterModuleState[]
 
+  // Corte 3: a lo sumo un Assessment por consulta -- el FK único vive en el
+  // lado de Assessment (Assessment.encounterId @unique). Ver comentario ahí
+  // para las reglas completas (histórico vs. encounter-scoped).
+  assessment Assessment?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -510,6 +515,16 @@ model Assessment {
   measurements     MeasurementRecord[]
   results          CalculatedResult[]
   nutritionalPlans NutritionalPlan[]
+
+  // Corte 3 (ClinicalEncounter ↔ Assessment): opcional a propósito. Un
+  // Assessment histórico/standalone conserva encounterId = NULL para
+  // siempre -- no hay backfill ni inferencia por fecha/patientId. Postgres
+  // permite múltiples NULL bajo UNIQUE, así que coexisten cuantos
+  // Assessment standalone existan. onDelete: Restrict porque un Assessment
+  // finalizado nunca debe desaparecer por eliminar la consulta (que de todos
+  // modos tampoco se borra físicamente).
+  encounterId String?            @unique
+  encounter   ClinicalEncounter? @relation(fields: [encounterId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

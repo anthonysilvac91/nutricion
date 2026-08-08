@@ -10,6 +10,9 @@ import { MeasurementSummaryService } from './measurement-summary.service';
   imports: [CalculationEngineModule],
   controllers: [AssessmentsController],
   providers: [AssessmentsService, ClinicalCalculationEngineService, ContextResolverService, MeasurementSummaryService],
-  exports: [AssessmentsService]
+  // ClinicalCalculationEngineService y ContextResolverService se exportan además de
+  // AssessmentsService para que EncounterAssessmentService (corte 3) los reutilice
+  // directamente -- misma autoridad de cálculo, sin instanciar una segunda copia.
+  exports: [AssessmentsService, ClinicalCalculationEngineService, ContextResolverService]
 })
 export class AssessmentsModule { }

@@ -24,6 +24,7 @@ type EncounterRow = {
   consultationReason: string | null;
   discardReason: string | null;
   notes?: string | null;
+  assessment?: { id: string } | null;
 };
 
 @Injectable()
@@ -57,6 +58,58 @@ export class EncountersService {
     const access = await this.resolveAccessiblePatientWorkspace(userId, patientId);
     if (!access) throw new NotFoundException('Patient not found');
     return access;
+  }
+
+  /**
+   * Lock compartido de ClinicalEncounter para cualquier operación de escritura
+   * encounter-scoped (discard aquí, y EncounterAssessmentService en el corte 3).
+   * Combina en una sola consulta: existencia, pertenencia al paciente,
+   * consistencia Patient.workspaceId = Encounter.workspaceId, membership del
+   * usuario en ese Workspace, y el lock de fila -- mismo patrón que
+   * AssessmentsService.lockDraftAssessment / PlansService.lockPlanRow.
+   *
+   * Orden estable de locks para operaciones que necesitan Encounter + Assessment:
+   * 1) ClinicalEncounter (este método), 2) Assessment -- siempre en ese orden,
+   * para no exponernos a deadlocks entre distintas operaciones concurrentes.
+   */
+  async lockEncounterForWrite(tx: Prisma.TransactionClient, userId: string, patientId: string, encounterId: string) {
+    const rows = await tx.$queryRaw<{ id: string; status: string; clinicalDate: Date }[]>`
+      SELECT e.id, e.status, e."clinicalDate"
+      FROM "ClinicalEncounter" e
+      JOIN "Patient" p ON p.id = e."patientId" AND p."workspaceId" = e."workspaceId"
+      JOIN "WorkspaceMember" m ON m."workspaceId" = e."workspaceId" AND m."userId" = ${userId}
+      WHERE e.id = ${encounterId} AND e."patientId" = ${patientId}
+      FOR UPDATE OF e
+    `;
+    const encounter = rows[0];
+    if (!encounter) throw new NotFoundException('Encounter not found');
+    return encounter;
+  }
+
+  /**
+   * Reconcilia EncounterModuleState(module=MEASUREMENTS) contra el estado real
+   * del Assessment asociado -- Assessment es la autoridad clínica,
+   * EncounterModuleState es solo una proyección de progreso (ver corte 2/3).
+   * No permite modificar un módulo cuya applicability sea NOT_APPLICABLE (no
+   * debería ocurrir con foundation-v1 hoy, pero no se acopla rígidamente a esa
+   * suposición: si una matriz futura lo vuelve NOT_APPLICABLE, esta llamada es
+   * un no-op silencioso en vez de forzar un estado incoherente).
+   */
+  async reconcileMeasurementsModule(
+    tx: Prisma.TransactionClient,
+    encounterId: string,
+    status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED',
+    completedAt: Date | null,
+  ): Promise<void> {
+    const moduleState = await tx.encounterModuleState.findUnique({
+      where: { encounterId_module: { encounterId, module: EncounterModule.MEASUREMENTS } },
+    });
+    if (!moduleState || moduleState.applicability === 'NOT_APPLICABLE') return;
+
+    await tx.encounterModuleState.update({
+      where: { encounterId_module: { encounterId, module: EncounterModule.MEASUREMENTS } },
+      data: { status, completedAt },
+    });
   }
 
   // POST /patients/:patientId/encounters
@@ -177,7 +230,9 @@ export class EncountersService {
         patientId,
         workspace: { members: { some: { userId } } },
       },
-      include: { modules: true },
+      // select mínimo del Assessment asociado -- solo su id, nunca sus
+      // MeasurementRecord/CalculatedResult aquí (evitar N+1 / payload innecesario).
+      include: { modules: true, assessment: { select: { id: true } } },
     });
     if (!encounter) throw new NotFoundException('Encounter not found');
 
@@ -187,25 +242,26 @@ export class EncountersService {
   // POST /patients/:patientId/encounters/:encounterId/discard
   async discard(userId: string, patientId: string, encounterId: string, dto: DiscardEncounterDto) {
     await this.prisma.$transaction(async (tx) => {
-      // Combina en una sola consulta: existencia, pertenencia al paciente,
-      // membership del usuario en el Workspace del Encounter, y el lock de
-      // fila -- mismo patrón que AssessmentsService.lockDraftAssessment /
-      // PlansService.lockPlanRow, adaptado a autorización por Workspace.
-      const rows = await tx.$queryRaw<{ id: string; status: string }[]>`
-        SELECT e.id, e.status
-        FROM "ClinicalEncounter" e
-        JOIN "WorkspaceMember" m ON m."workspaceId" = e."workspaceId" AND m."userId" = ${userId}
-        WHERE e.id = ${encounterId} AND e."patientId" = ${patientId}
-        FOR UPDATE OF e
-      `;
-      const encounter = rows[0];
-      if (!encounter) throw new NotFoundException('Encounter not found');
+      const encounter = await this.lockEncounterForWrite(tx, userId, patientId, encounterId);
       if (encounter.status !== EncounterStatus.IN_PROGRESS) {
         throw new ConflictException({
           code: 'ENCOUNTER_NOT_IN_PROGRESS',
           message: 'La consulta ya no está en curso.',
         });
       }
+
+      // Un Assessment DRAFT ligado a esta consulta no puede seguir "abierto"
+      // una vez que la consulta se descarta -- se archiva (nunca se borra) para
+      // liberar el índice de "un DRAFT por paciente" y dejar de bloquear al
+      // paciente para futuras consultas. Nunca se borran sus MeasurementRecord.
+      // Si el Assessment ya está COMPLETED, este updateMany no lo toca (el
+      // filtro exige status='DRAFT') -- se preserva tal cual, con sus
+      // resultados clínicos intactos. EncounterModuleState no se toca: el
+      // Encounter ya queda DISCARDED, no hay progreso clínico que inventar.
+      await tx.assessment.updateMany({
+        where: { encounterId, status: 'DRAFT' },
+        data: { status: 'ARCHIVED' },
+      });
 
       // Defensive belt-and-suspenders: el lock FOR UPDATE ya garantiza que esto
       // no puede afectar 0 filas en la práctica, pero el WHERE condicional +
@@ -279,6 +335,7 @@ export class EncountersService {
       discardReason: row.discardReason,
       notes: row.notes ?? null,
       responsibleProfessionalId: row.responsibleProfessionalId,
+      assessmentId: row.assessment?.id ?? null,
       modules: modules.map((m) => ({
         module: m.module,
         applicability: m.applicability,
