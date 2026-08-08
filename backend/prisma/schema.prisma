@@ -75,16 +75,20 @@ model Patient {
   assessments      Assessment[]
   nutritionalPlans NutritionalPlan[]
 
-  // Nullable en este release: la Migración B (NOT NULL) se despliega por
-  // separado, después de correr y verificar el backfill en producción (ver
-  // prisma/backfill-workspaces.ts y prisma/verify-workspace-backfill.ts).
+  // Obligatorio desde la Migración B (require_patient_workspace): el backfill
+  // de producción se ejecutó y verificó (prisma/backfill-workspaces.ts /
+  // prisma/verify-workspace-backfill.ts confirmaron 0 pacientes sin
+  // workspaceId), así que la columna pasó de nullable a NOT NULL con un FK
+  // RESTRICT (antes era SET NULL, incoherente con un campo obligatorio).
   // AuthService.register() crea el Workspace PERSONAL atómicamente para todo
-  // NUTRITIONIST nuevo; PatientsService.create() lo resuelve como fallback
-  // idempotente para cualquier caso no cubierto (usuarios previos al backfill,
-  // ADMIN con pacientes, etc.). Autorización sigue siendo por userId sin
-  // cambios -- workspaceId todavía no es la autoridad de acceso.
-  workspaceId String?
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+  // NUTRITIONIST nuevo; PatientsService.create() lo resuelve como red de
+  // seguridad idempotente para cualquier caso no cubierto por el registro
+  // (ADMIN con pacientes, etc.) -- ver resolvePersonalWorkspaceId(). La
+  // autorización de Patient/Assessment/Plan sigue siendo por userId sin
+  // cambios; workspaceId todavía no es su autoridad de acceso (sí lo es para
+  // ClinicalEncounter, ver corte 2).
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
 
   // ClinicalEncounter (corte 2). onDelete: Restrict en la FK del lado de ClinicalEncounter --
   // una consulta clínica nunca debe desaparecer por eliminar el Patient (ver PatientsService.remove()).

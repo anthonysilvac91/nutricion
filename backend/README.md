@@ -40,11 +40,14 @@ Validar conexion y migraciones:
 npx prisma migrate status
 ```
 
-Aplicar migraciones:
+Aplicar migraciones (desarrollo local -- crea/ajusta migraciones interactivamente):
 
 ```bash
 npx prisma migrate dev
 ```
+
+En producción las migraciones se aplican con `npx prisma migrate deploy`
+(aplica las migraciones ya existentes en el repo, no crea ninguna nueva).
 
 Generar cliente Prisma:
 
@@ -64,24 +67,26 @@ Seed demo:
 npx prisma db seed
 ```
 
-### Fundación Workspace (corte 1 de la fase Consulta Clínica)
+### Fundación Workspace (fase Consulta Clínica)
 
-`Patient.workspaceId` es nullable en este release a propósito -- la migración
-que la vuelve `NOT NULL` se despliega por separado, en un release posterior,
-después de correr y verificar el backfill en producción. **No incluir esa
-migración en el mismo release que ejecuta el backfill.**
+`Patient.workspaceId` es **obligatorio** (`NOT NULL`) desde la migración
+`20260808151040_require_patient_workspace`. El FK `Patient.workspaceId ->
+Workspace.id` usa `ON DELETE RESTRICT ON UPDATE CASCADE`: un `Workspace` con
+al menos un `Patient` asociado no puede eliminarse, y un `Patient` nunca
+queda huérfano de Workspace (antes de esta migración el FK usaba `ON DELETE
+SET NULL`, incoherente con una columna obligatoria).
 
-Desde este release, todo `NUTRITIONIST` nuevo recibe su Workspace PERSONAL y
-su membresía OWNER atómicamente durante `POST /auth/register` (misma
-transacción que la creación del `User`). `PatientsService.create()` conserva
-una resolución perezosa e idempotente del Workspace como red de seguridad para
-cualquier caso no cubierto por el registro (usuarios creados antes de este
-cambio, `ADMIN` con pacientes, etc.).
+Todo `NUTRITIONIST` nuevo recibe su Workspace PERSONAL y su membresía OWNER
+atómicamente durante `POST /auth/register` (misma transacción que la
+creación del `User`). `PatientsService.create()` conserva una resolución
+idempotente del Workspace como red de seguridad para cualquier caso no
+cubierto por el registro (`ADMIN` con pacientes, etc.).
 
-**Release 1 -- fundación + backfill (esta rama):**
+**Historial de despliegue (corte 1, ya ejecutado y verificado en
+producción):**
 
 ```bash
-# Crea Workspace, WorkspaceMember y Patient.workspaceId (nullable)
+# Migración A: crea Workspace, WorkspaceMember y Patient.workspaceId (nullable en ese momento)
 npx prisma migrate deploy
 
 # Backfill idempotente: crea un Workspace PERSONAL por NUTRITIONIST y por
@@ -92,19 +97,24 @@ npx ts-node prisma/backfill-workspaces.ts
 npx ts-node prisma/verify-workspace-backfill.ts
 ```
 
-`backfill-workspaces.ts` y `verify-workspace-backfill.ts` no requieren ningún
-argumento y son seguros de ejecutar repetidamente (no duplican Workspaces ni
-memberships, no reasignan pacientes ya asociados). Antes de continuar al
-release 2, confirmar en producción que la verificación sale con código 0.
+`backfill-workspaces.ts` y `verify-workspace-backfill.ts` se conservan en el
+repositorio como parte de ese proceso histórico y siguen siendo seguros de
+ejecutar repetidamente (no duplican Workspaces ni memberships, no reasignan
+pacientes ya asociados) -- útiles como chequeo de salud aunque la columna ya
+sea obligatoria.
 
-**Release 2 -- migración NOT NULL (rama/PR separado, posterior):**
+**Migración B (ya aplicada):** una vez confirmado en producción que la
+verificación anterior salía con código 0, se desplegó
+`20260808151040_require_patient_workspace`, que agrega un guard explícito
+(`DO $$ ... RAISE EXCEPTION`) que aborta la migración completa si encuentra
+algún `Patient.workspaceId IS NULL` -- no hace ningún `UPDATE` ni asigna
+Workspaces por su cuenta -- y luego aplica `SET NOT NULL` y reemplaza el FK
+por `ON DELETE RESTRICT`. En producción se aplica igual que cualquier otra
+migración:
 
-Agregar y desplegar la migración que aplica `Patient.workspaceId NOT NULL`
-(con el guard que aborta si queda algún paciente sin workspace) solo después
-de que el release 1 lleve corriendo el tiempo suficiente para que el registro
-atómico y el fallback de `PatientsService.create()` hayan cubierto cualquier
-escritura nueva, y de que el backfill + verificación se hayan confirmado en
-producción.
+```bash
+npx prisma migrate deploy
+```
 
 ## Ejecucion
 

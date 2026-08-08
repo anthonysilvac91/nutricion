@@ -1,9 +1,35 @@
 import { PrismaClient, Sex, ActivityLevel, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { randomUUID } from 'crypto';
 
 const prisma = new PrismaClient();
 
+// Patient.workspaceId es NOT NULL desde la Migración B -- este seed crea el
+// usuario directamente vía prisma.user.upsert() (no pasa por
+// AuthService.register(), que ya crea el Workspace atómicamente), así que
+// necesita resolver uno explícitamente. Mismo patrón idempotente que
+// prisma/backfill-workspaces.ts para que correr el seed dos veces no cree un
+// segundo Workspace PERSONAL para el mismo owner.
+async function ensurePersonalWorkspaceId(userId: string): Promise<string> {
+  const inserted = await prisma.$queryRaw<{ id: string }[]>`
+    INSERT INTO "Workspace" ("id", "ownerUserId", "type", "name", "timezone", "createdAt", "updatedAt")
+    VALUES (${randomUUID()}, ${userId}, 'PERSONAL', 'Espacio personal', 'America/Santiago', now(), now())
+    ON CONFLICT ("ownerUserId") WHERE "type" = 'PERSONAL' DO NOTHING
+    RETURNING "id"
+  `;
+  const workspaceId =
+    inserted.length > 0
+      ? inserted[0].id
+      : (await prisma.workspace.findFirstOrThrow({ where: { ownerUserId: userId, type: 'PERSONAL' }, select: { id: true } })).id;
 
+  await prisma.workspaceMember.upsert({
+    where: { workspaceId_userId: { workspaceId, userId } },
+    update: { role: 'OWNER' },
+    create: { workspaceId, userId, role: 'OWNER' },
+  });
+
+  return workspaceId;
+}
 
 async function main() {
   console.log('Running Seed...');
@@ -51,9 +77,11 @@ async function main() {
   });
 
   // 2) Paciente
+  const workspaceId = await ensurePersonalWorkspaceId(user.id);
   const patient = await prisma.patient.create({
     data: {
       userId: user.id,
+      workspaceId,
       firstName: 'Juan',
       lastName: 'Pérez',
       sex: Sex.MALE,
