@@ -186,6 +186,51 @@ describe('AssessmentsService', () => {
         });
     });
 
+    // Corte 3: las rutas legacy (userId-scoped) nunca deben poder mutar un
+    // Assessment ligado a un ClinicalEncounter -- ver lockDraftAssessment.
+    describe('legacy routes cannot mutate an Assessment linked to a ClinicalEncounter', () => {
+        function mockLockRowLinkedToEncounter() {
+            tx.$queryRaw.mockResolvedValue([{ id: 'assessment-1', status: 'DRAFT', encounterId: 'enc-1' }]);
+        }
+
+        it('upsertMeasurements rejects with 409 ASSESSMENT_LINKED_TO_ENCOUNTER', async () => {
+            mockLockRowLinkedToEncounter();
+            try {
+                await service.upsertMeasurements('user-1', 'patient-1', 'assessment-1', { measurements: [{ definitionId: 'm_weight', numericValue: 70 }] });
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('ASSESSMENT_LINKED_TO_ENCOUNTER');
+            }
+            expect(tx.measurementRecord.upsert).not.toHaveBeenCalled();
+        });
+
+        it('removeMeasurement rejects with 409 ASSESSMENT_LINKED_TO_ENCOUNTER', async () => {
+            mockLockRowLinkedToEncounter();
+            await expect(service.removeMeasurement('user-1', 'patient-1', 'assessment-1', 'm_weight')).rejects.toThrow(ConflictException);
+            expect(tx.measurementRecord.deleteMany).not.toHaveBeenCalled();
+        });
+
+        it('complete rejects with 409 ASSESSMENT_LINKED_TO_ENCOUNTER', async () => {
+            mockLockRowLinkedToEncounter();
+            await expect(service.complete('user-1', 'patient-1', 'assessment-1')).rejects.toThrow(ConflictException);
+            expect(tx.calculatedResult.deleteMany).not.toHaveBeenCalled();
+        });
+
+        it('createOrGetDraft rejects with 409 ASSESSMENT_LINKED_TO_ENCOUNTER when the patient active DRAFT belongs to a consultation', async () => {
+            prisma.patient.findFirst.mockResolvedValue({ id: 'patient-1' });
+            prisma.assessment.findFirst.mockResolvedValue({ id: 'draft-1', status: 'DRAFT', encounterId: 'enc-1' });
+
+            try {
+                await service.createOrGetDraft('user-1', 'patient-1', {});
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('ASSESSMENT_LINKED_TO_ENCOUNTER');
+            }
+        });
+    });
+
     describe('locking (Fase 1 -- atomicity)', () => {
         function mockLockRow(status: string | null) {
             tx.$queryRaw.mockResolvedValue(status ? [{ id: 'assessment-1', status }] : []);

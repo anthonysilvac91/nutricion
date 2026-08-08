@@ -7,7 +7,8 @@ function buildPrismaMock() {
   const tx = {
     $queryRaw: jest.fn(),
     clinicalEncounter: { create: jest.fn(), updateMany: jest.fn() },
-    encounterModuleState: { createMany: jest.fn() },
+    encounterModuleState: { createMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+    assessment: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
   };
   const prisma = {
     patient: { findFirst: jest.fn() },
@@ -219,6 +220,20 @@ describe('EncountersService', () => {
       expect(result.consultationReason).toBe('Control nutricional');
     });
 
+    it('archives a DRAFT Assessment linked to the encounter being discarded, without touching MeasurementRecord', async () => {
+      tx.$queryRaw.mockResolvedValue([{ id: 'enc-1', status: 'IN_PROGRESS' }]);
+      tx.clinicalEncounter.updateMany.mockResolvedValue({ count: 1 });
+      tx.assessment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.clinicalEncounter.findFirst.mockResolvedValue(fullDetailFixture({ status: 'DISCARDED' }));
+
+      await service.discard('user-1', 'patient-1', 'enc-1', { discardReason: 'No show' } as any);
+
+      expect(tx.assessment.updateMany).toHaveBeenCalledWith({
+        where: { encounterId: 'enc-1', status: 'DRAFT' },
+        data: { status: 'ARCHIVED' },
+      });
+    });
+
     it('a second discard on an already-DISCARDED encounter returns 409 ENCOUNTER_NOT_IN_PROGRESS', async () => {
       tx.$queryRaw.mockResolvedValue([{ id: 'enc-1', status: 'DISCARDED' }]);
 
@@ -229,6 +244,40 @@ describe('EncountersService', () => {
     it('returns 404 when the encounter is not visible from the caller workspace (lock query finds nothing)', async () => {
       tx.$queryRaw.mockResolvedValue([]);
       await expect(service.discard('user-1', 'patient-1', 'enc-1', { discardReason: 'No show' } as any)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('findOneForPatient (assessmentId exposure)', () => {
+    it('exposes assessmentId from the associated Assessment, or null when there is none', async () => {
+      prisma.clinicalEncounter.findFirst.mockResolvedValueOnce(fullDetailFixture({ assessment: { id: 'assessment-1' } }));
+      const withAssessment = await service.findOneForPatient('user-1', 'patient-1', 'enc-1');
+      expect(withAssessment.assessmentId).toBe('assessment-1');
+
+      prisma.clinicalEncounter.findFirst.mockResolvedValueOnce(fullDetailFixture({ assessment: null }));
+      const withoutAssessment = await service.findOneForPatient('user-1', 'patient-1', 'enc-1');
+      expect(withoutAssessment.assessmentId).toBeNull();
+    });
+  });
+
+  describe('reconcileMeasurementsModule', () => {
+    it('updates MEASUREMENTS status/completedAt when applicability is not NOT_APPLICABLE', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue({ applicability: 'REQUIRED' });
+      const completedAt = new Date();
+
+      await service.reconcileMeasurementsModule(tx as any, 'enc-1', 'COMPLETED', completedAt);
+
+      expect(tx.encounterModuleState.update).toHaveBeenCalledWith({
+        where: { encounterId_module: { encounterId: 'enc-1', module: 'MEASUREMENTS' } },
+        data: { status: 'COMPLETED', completedAt },
+      });
+    });
+
+    it('is a silent no-op when MEASUREMENTS applicability is NOT_APPLICABLE (never forces an incoherent state)', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue({ applicability: 'NOT_APPLICABLE' });
+
+      await service.reconcileMeasurementsModule(tx as any, 'enc-1', 'COMPLETED', new Date());
+
+      expect(tx.encounterModuleState.update).not.toHaveBeenCalled();
     });
   });
 });
