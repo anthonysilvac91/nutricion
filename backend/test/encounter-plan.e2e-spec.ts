@@ -48,6 +48,13 @@ describe('Encounter Plan (e2e)', () => {
     return res.body;
   }
 
+  /** Agrega a userId como WorkspaceMember del Workspace real del Patient -- directo en la BD, como pediría un fixture de un centro con varios profesionales. */
+  async function addWorkspaceMember(patientId: string, userId: string) {
+    const patient = await prisma.patient.findUniqueOrThrow({ where: { id: patientId } });
+    await prisma.workspaceMember.create({ data: { workspaceId: patient.workspaceId, userId, role: 'PROFESSIONAL' } });
+    return patient.workspaceId;
+  }
+
   const assessmentPath = (patientId: string, encounterId: string) => `/patients/${patientId}/encounters/${encounterId}/assessment`;
   const planPath = (patientId: string, encounterId: string) => `/patients/${patientId}/encounters/${encounterId}/plan`;
 
@@ -306,6 +313,99 @@ describe('Encounter Plan (e2e)', () => {
       await request(app.getHttpServer()).get(planPath(patientId, encounter.id)).set('Authorization', `Bearer ${userA.token}`).expect(404);
       await request(app.getHttpServer()).get(planPath(patientId, encounter.id)).set('Authorization', `Bearer ${userB.token}`).expect(404);
       await request(app.getHttpServer()).post(planPath(patientId, encounter.id) + '/finalize').set('Authorization', `Bearer ${userA.token}`).expect(404);
+    });
+  });
+
+  // Corte 4.3: el índice único real que garantiza "un DRAFT por paciente"
+  // (NutritionalPlan_one_draft_per_patient) es solo por patientId -- nunca
+  // patientId+userId. Un WorkspaceMember distinto de Patient.userId puede
+  // legítimamente crear el Plan encounter-scoped (su userId queda como el del
+  // creador real, no el del dueño del Patient), así que la ruta legacy debe
+  // reconocer ese DRAFT y rechazarlo con PLAN_LINKED_TO_ENCOUNTER en vez de
+  // fallar con un 500 por no encontrarlo bajo su propio userId.
+  describe('Cross-member workspace scenarios (corte 4.3)', () => {
+    it('deterministic: B (WorkspaceMember, not Patient.userId) creates the encounter Plan, then A\'s legacy POST /plans returns 409 PLAN_LINKED_TO_ENCOUNTER -- never 500, never a second DRAFT, never B\'s plan', async () => {
+      const userA = await registerNutritionist('crossA');
+      const patientId = await createPatient(userA.token, 'CrossMemberA');
+      const userB = await registerNutritionist('crossB');
+      await addWorkspaceMember(patientId, userB.userId);
+
+      const encounter = await createEncounter(userA.token, patientId);
+      const assessment = await completeAssessment(userA.token, patientId, encounter.id);
+
+      // B (miembro del Workspace, pero NO Patient.userId) crea el Plan encounter-scoped.
+      const planRes = await request(app.getHttpServer()).post(planPath(patientId, encounter.id)).set('Authorization', `Bearer ${userB.token}`).expect(201);
+      expect(planRes.body.status).toBe('DRAFT');
+
+      const planRow = await prisma.nutritionalPlan.findUniqueOrThrow({ where: { id: planRes.body.id } });
+      expect(planRow.userId).toBe(userB.userId);
+      expect(planRow.status).toBe('DRAFT');
+      expect(planRow.encounterId).toBe(encounter.id);
+
+      // A (Patient.userId, dueño legacy) intenta la ruta legacy con el mismo Assessment.
+      const legacyRes = await request(app.getHttpServer())
+        .post(`/patients/${patientId}/plans`)
+        .set('Authorization', `Bearer ${userA.token}`)
+        .send({ assessmentId: assessment.id })
+        .expect(409);
+      const code = legacyRes.body.message?.code ?? legacyRes.body.code;
+      expect(code).toBe('PLAN_LINKED_TO_ENCOUNTER');
+
+      const draftCount = await prisma.nutritionalPlan.count({ where: { patientId, status: 'DRAFT' } });
+      expect(draftCount).toBe(1);
+    });
+
+    it('race: legacy createOrGetDraft (A) vs encounter createOrGet (B), both WorkspaceMembers of the same Workspace but A != Patient B\'s creator identity, never produce two DRAFT, never 500, legacy never returns the encounter-scoped Plan', async () => {
+      const outcomesSeen = new Set<'legacy-won' | 'encounter-won'>();
+
+      for (let i = 0; i < 8; i++) {
+        const userA = await registerNutritionist(`crossRaceA${i}`);
+        const patientId = await createPatient(userA.token, `CrossRaceA${i}`);
+        const userB = await registerNutritionist(`crossRaceB${i}`);
+        await addWorkspaceMember(patientId, userB.userId);
+
+        const encounter = await createEncounter(userA.token, patientId);
+        const assessment = await completeAssessment(userA.token, patientId, encounter.id);
+
+        const sendLegacy = () =>
+          request(app.getHttpServer()).post(`/patients/${patientId}/plans`).set('Authorization', `Bearer ${userA.token}`).send({ assessmentId: assessment.id });
+        const sendEncounter = () => request(app.getHttpServer()).post(planPath(patientId, encounter.id)).set('Authorization', `Bearer ${userB.token}`);
+        const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        const encounterPromise = sendEncounter();
+        const legacyPromise = i % 2 === 0 ? sendLegacy() : delay(25).then(sendLegacy);
+        const [legacyRes, encounterRes] = await Promise.all([legacyPromise, encounterPromise]);
+
+        expect(legacyRes.status).not.toBe(500);
+        expect(encounterRes.status).not.toBe(500);
+
+        const draftCount = await prisma.nutritionalPlan.count({ where: { patientId, status: 'DRAFT' } });
+        expect(draftCount).toBe(1);
+
+        if (legacyRes.status === 201) {
+          outcomesSeen.add('legacy-won');
+          expect(encounterRes.status).toBe(409);
+          const code = encounterRes.body.message?.code ?? encounterRes.body.code;
+          expect(code).toBe('PATIENT_HAS_UNLINKED_DRAFT_PLAN');
+
+          const winner = await prisma.nutritionalPlan.findFirstOrThrow({ where: { patientId, status: 'DRAFT' } });
+          expect(winner.encounterId).toBeNull();
+          expect(winner.userId).toBe(userA.userId);
+        } else {
+          outcomesSeen.add('encounter-won');
+          expect(encounterRes.status).toBe(201);
+          expect(legacyRes.status).toBe(409);
+          const code = legacyRes.body.message?.code ?? legacyRes.body.code;
+          expect(code).toBe('PLAN_LINKED_TO_ENCOUNTER');
+
+          const winner = await prisma.nutritionalPlan.findFirstOrThrow({ where: { patientId, status: 'DRAFT' } });
+          expect(winner.encounterId).toBe(encounter.id);
+          expect(winner.userId).toBe(userB.userId);
+        }
+      }
+
+      // eslint-disable-next-line no-console
+      console.log('Escenario cross-member (Plan) -- órdenes observados en 8 repeticiones:', [...outcomesSeen]);
     });
   });
 

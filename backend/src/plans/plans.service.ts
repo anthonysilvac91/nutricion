@@ -295,24 +295,58 @@ export class PlansService {
         return this.mapToDto(plan);
     }
 
+    /**
+     * El índice único real que garantiza "un DRAFT por paciente"
+     * (NutritionalPlan_one_draft_per_patient) está escopeado EXCLUSIVAMENTE por
+     * patientId, nunca por patientId+userId -- un WorkspaceMember distinto de
+     * Patient.userId puede legítimamente ser el userId de un Plan creado por el
+     * flujo encounter-scoped. Buscar el DRAFT activo filtrando también por userId
+     * (como hacía este método antes de este fix) puede no encontrar un DRAFT que
+     * el índice de la base de datos sabe que existe, llevando a un P2002 en el
+     * INSERT y, peor, a una segunda búsqueda igual de estrecha en el catch que
+     * puede no encontrar al ganador real (findFirstOrThrow -> P2025 -> 500).
+     *
+     * Por eso tanto el precheck como la resolución de P2002 buscan únicamente por
+     * { patientId, status: 'DRAFT' } -- exactamente lo que el índice único
+     * garantiza -- y clasifican el DRAFT encontrado según su encounterId/userId
+     * real, nunca asumiendo que pertenece al caller solo porque lo encontramos.
+     */
+    private assertLegacyDraftReturnable(
+        existing: { userId: string; encounterId: string | null; assessmentId: string },
+        userId: string,
+        assessmentId: string,
+    ): void {
+        if (existing.encounterId) {
+            // Pertenece a un ClinicalEncounter -- la ruta legacy nunca lo devuelve ni
+            // permite mutarlo por esta vía (ver lockPlanRow), sin importar de quién sea
+            // userId: la autoridad de esa consulta es Workspace, no Patient.userId.
+            throw new ConflictException({
+                code: 'PLAN_LINKED_TO_ENCOUNTER',
+                message: 'El borrador activo de este paciente pertenece a una consulta clínica; usa las rutas de la consulta para acceder a él.',
+            });
+        }
+        if (existing.userId !== userId) {
+            // Caso anómalo/futuro: un DRAFT standalone creado por OTRO userId (p.ej. un
+            // WorkspaceMember distinto usando esta misma ruta legacy). Nunca se devuelve
+            // como si perteneciera al caller -- esta ruta sigue gateada por
+            // Patient.userId, así que un DRAFT de otro dueño nunca es "suyo" aquí.
+            throw new ConflictException({
+                code: 'PLAN_DRAFT_OWNED_BY_OTHER_USER',
+                message: 'El borrador activo de este paciente fue creado por otro usuario.',
+            });
+        }
+        if (existing.assessmentId !== assessmentId) {
+            throw new ConflictException('Ya existe un plan en borrador para otra evaluación; complétalo o descártalo antes de crear uno nuevo.');
+        }
+    }
+
     // POST /patients/:patientId/plans  ->  crea o devuelve borrador activo, ligado a un Assessment COMPLETED
     async createOrGetDraft(userId: string, patientId: string, dto: CreatePlanDto) {
         const patient = await this.verifyPatientOwnership(this.prisma, userId, patientId);
 
-        const existing = await this.prisma.nutritionalPlan.findFirst({ where: { patientId, userId, status: 'DRAFT' } });
+        const existing = await this.prisma.nutritionalPlan.findFirst({ where: { patientId, status: 'DRAFT' } });
         if (existing) {
-            // Corte 4: el DRAFT activo del paciente pertenece a un ClinicalEncounter -- la ruta
-            // legacy no debe devolverlo ni mucho menos permitir mutarlo por esta vía (ver
-            // lockPlanRow). El caller debe usar las rutas encounter-scoped.
-            if (existing.encounterId) {
-                throw new ConflictException({
-                    code: 'PLAN_LINKED_TO_ENCOUNTER',
-                    message: 'El borrador activo de este paciente pertenece a una consulta clínica; usa las rutas de la consulta para acceder a él.',
-                });
-            }
-            if (existing.assessmentId !== dto.assessmentId) {
-                throw new ConflictException('Ya existe un plan en borrador para otra evaluación; complétalo o descártalo antes de crear uno nuevo.');
-            }
+            this.assertLegacyDraftReturnable(existing, userId, dto.assessmentId);
             return this.mapToDto(existing);
         }
 
@@ -343,20 +377,24 @@ export class PlansService {
             return this.mapToDto(created);
         } catch (e) {
             if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-                // Another concurrent request already created the DRAFT (DB partial-unique-index race).
-                // El ganador puede haber sido una POST .../encounters/:encounterId/plan concurrente
-                // -- si quedó ligado a un ClinicalEncounter, esta ruta legacy NUNCA debe devolverlo
-                // (ni su lectura), igual que ya rechaza el caso no-concurrente de arriba (`existing.encounterId`).
-                const winner = await this.prisma.nutritionalPlan.findFirstOrThrow({ where: { patientId, userId, status: 'DRAFT' } });
-                if (winner.encounterId) {
+                // Another concurrent request already created the DRAFT (DB partial-unique-index
+                // race). El índice único es { patientId } solamente -- buscar también por userId
+                // podría no encontrar al ganador real (p.ej. si ganó un WorkspaceMember distinto
+                // vía el flujo encounter-scoped), y un findFirstOrThrow con ese filtro estrecho
+                // puede fallar con P2025 -> 500 por una condición de carrera perfectamente
+                // esperable. Se busca por { patientId, status: 'DRAFT' } (lo único que el índice
+                // realmente garantiza) con findFirst, nunca findFirstOrThrow.
+                const winner = await this.prisma.nutritionalPlan.findFirst({ where: { patientId, status: 'DRAFT' } });
+                if (!winner) {
+                    // Ventana extremadamente corta donde el DRAFT ganador ya dejó de ser DRAFT
+                    // entre el P2002 y esta lectura -- nunca se traduce en 500: se informa como
+                    // conflicto transitorio para que el caller reintente.
                     throw new ConflictException({
-                        code: 'PLAN_LINKED_TO_ENCOUNTER',
-                        message: 'El borrador activo de este paciente pertenece a una consulta clínica; usa las rutas de la consulta para acceder a él.',
+                        code: 'PLAN_DRAFT_RACE_UNRESOLVED',
+                        message: 'No se pudo determinar el resultado de la carrera de creación del plan; reintente la operación.',
                     });
                 }
-                if (winner.assessmentId !== dto.assessmentId) {
-                    throw new ConflictException('Ya existe un plan en borrador para otra evaluación; complétalo o descártalo antes de crear uno nuevo.');
-                }
+                this.assertLegacyDraftReturnable(winner, userId, dto.assessmentId);
                 return this.mapToDto(winner);
             }
             throw e;

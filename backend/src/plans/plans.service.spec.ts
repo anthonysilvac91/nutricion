@@ -237,7 +237,7 @@ describe('PlansService', () => {
         it('returns the existing draft without recomputing when it targets the same assessment', async () => {
             prisma.patient.findFirst.mockResolvedValue(PATIENT);
             const existing = {
-                id: 'plan-existing', status: 'DRAFT', assessmentId: 'assessment-1',
+                id: 'plan-existing', status: 'DRAFT', assessmentId: 'assessment-1', userId: 'user-1', encounterId: null,
                 sourceSnapshot: V2_SNAPSHOT, config: {}, calculationResults: {}, calculationMetadata: null,
             };
             prisma.nutritionalPlan.findFirst.mockResolvedValue(existing);
@@ -247,14 +247,42 @@ describe('PlansService', () => {
             expect(result.id).toBe('plan-existing');
             expect(planCalculation.calculate).not.toHaveBeenCalled();
             expect(prisma.assessment.findFirst).not.toHaveBeenCalled();
+            // El precheck busca únicamente por { patientId, status: 'DRAFT' } -- el índice único
+            // real (NutritionalPlan_one_draft_per_patient) no incluye userId, así que filtrar
+            // también por userId aquí podría no encontrar un DRAFT que sí existe.
+            expect(prisma.nutritionalPlan.findFirst).toHaveBeenCalledWith({ where: { patientId: 'patient-1', status: 'DRAFT' } });
         });
 
         it('throws ConflictException (409) when an active DRAFT exists for a DIFFERENT assessmentId', async () => {
             prisma.patient.findFirst.mockResolvedValue(PATIENT);
-            prisma.nutritionalPlan.findFirst.mockResolvedValue({ id: 'plan-existing', status: 'DRAFT', assessmentId: 'assessment-OLD' });
+            prisma.nutritionalPlan.findFirst.mockResolvedValue({ id: 'plan-existing', status: 'DRAFT', assessmentId: 'assessment-OLD', userId: 'user-1', encounterId: null });
 
-            await expect(service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-NEW' } as any)).rejects.toThrow(ConflictException);
+            try {
+                await service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-NEW' } as any);
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                // Nunca PLAN_DRAFT_OWNED_BY_OTHER_USER aquí -- mismo userId, solo distinto assessmentId.
+                expect(e.getResponse().code).toBeUndefined();
+            }
             expect(planCalculation.calculate).not.toHaveBeenCalled();
+        });
+
+        // Corte 4.3: el índice único real (NutritionalPlan_one_draft_per_patient) es solo por
+        // patientId -- un DRAFT standalone puede legítimamente pertenecer a otro userId (p.ej. un
+        // WorkspaceMember distinto que también usa esta ruta legacy). Nunca se devuelve como si
+        // fuera del caller.
+        it('throws 409 PLAN_DRAFT_OWNED_BY_OTHER_USER when the standalone active DRAFT belongs to a different userId', async () => {
+            prisma.patient.findFirst.mockResolvedValue(PATIENT);
+            prisma.nutritionalPlan.findFirst.mockResolvedValue({ id: 'plan-existing', status: 'DRAFT', assessmentId: 'assessment-1', userId: 'user-OTHER', encounterId: null });
+
+            try {
+                await service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-1' } as any);
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('PLAN_DRAFT_OWNED_BY_OTHER_USER');
+            }
         });
 
         it('throws BadRequestException when the assessment is not COMPLETED', async () => {
@@ -318,28 +346,65 @@ describe('PlansService', () => {
 
         it('handles a concurrent-create race (DB partial unique index) by returning the winning draft', async () => {
             prisma.patient.findFirst.mockResolvedValue(PATIENT);
-            prisma.nutritionalPlan.findFirst.mockResolvedValue(null);
+            prisma.nutritionalPlan.findFirst.mockResolvedValueOnce(null); // precheck: sin DRAFT todavía
             prisma.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
             const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
             prisma.nutritionalPlan.create.mockRejectedValue(p2002);
-            prisma.nutritionalPlan.findFirstOrThrow.mockResolvedValue({
-                id: 'winning-draft', assessmentId: 'assessment-1', status: 'DRAFT',
+            // La resolución de P2002 usa findFirst (nunca findFirstOrThrow) y busca solo por
+            // { patientId, status: 'DRAFT' } -- exactamente lo que el índice único garantiza.
+            prisma.nutritionalPlan.findFirst.mockResolvedValueOnce({
+                id: 'winning-draft', assessmentId: 'assessment-1', status: 'DRAFT', userId: 'user-1', encounterId: null,
                 sourceSnapshot: V2_SNAPSHOT, config: {}, calculationResults: {}, calculationMetadata: null,
             });
 
             const result = await service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-1' } as any);
             expect(result.id).toBe('winning-draft');
+            expect(prisma.nutritionalPlan.findFirstOrThrow).not.toHaveBeenCalled();
         });
 
         it('the race winner having a different assessmentId still surfaces as 409, not a silent wrong bind', async () => {
             prisma.patient.findFirst.mockResolvedValue(PATIENT);
-            prisma.nutritionalPlan.findFirst.mockResolvedValue(null);
+            prisma.nutritionalPlan.findFirst.mockResolvedValueOnce(null);
             prisma.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
             const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
             prisma.nutritionalPlan.create.mockRejectedValue(p2002);
-            prisma.nutritionalPlan.findFirstOrThrow.mockResolvedValue({ id: 'winning-draft', assessmentId: 'assessment-OTHER', status: 'DRAFT' });
+            prisma.nutritionalPlan.findFirst.mockResolvedValueOnce({ id: 'winning-draft', assessmentId: 'assessment-OTHER', status: 'DRAFT', userId: 'user-1', encounterId: null });
 
             await expect(service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-1' } as any)).rejects.toThrow(ConflictException);
+        });
+
+        it('resolves a P2002 race against a winner owned by a DIFFERENT userId with 409 PLAN_DRAFT_OWNED_BY_OTHER_USER, never returning it as the caller\'s own', async () => {
+            prisma.patient.findFirst.mockResolvedValue(PATIENT);
+            prisma.nutritionalPlan.findFirst.mockResolvedValueOnce(null);
+            prisma.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
+            const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
+            prisma.nutritionalPlan.create.mockRejectedValue(p2002);
+            prisma.nutritionalPlan.findFirst.mockResolvedValueOnce({ id: 'winner-other-user', assessmentId: 'assessment-1', status: 'DRAFT', userId: 'user-OTHER', encounterId: null });
+
+            try {
+                await service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-1' } as any);
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('PLAN_DRAFT_OWNED_BY_OTHER_USER');
+            }
+        });
+
+        it('a P2002 race with no resolvable winner (transient window) never crashes to 500 -- reports a conflict instead', async () => {
+            prisma.patient.findFirst.mockResolvedValue(PATIENT);
+            prisma.nutritionalPlan.findFirst.mockResolvedValueOnce(null);
+            prisma.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
+            const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
+            prisma.nutritionalPlan.create.mockRejectedValue(p2002);
+            prisma.nutritionalPlan.findFirst.mockResolvedValueOnce(null);
+
+            try {
+                await service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-1' } as any);
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('PLAN_DRAFT_RACE_UNRESOLVED');
+            }
         });
     });
 
@@ -523,13 +588,17 @@ describe('PlansService', () => {
             }
         });
 
-        it('resolves a P2002 race against an ENCOUNTER-LINKED winner with 409 PLAN_LINKED_TO_ENCOUNTER -- never returns it, even under a race', async () => {
+        it('resolves a P2002 race against an ENCOUNTER-LINKED winner with 409 PLAN_LINKED_TO_ENCOUNTER -- never returns it, even under a race, even when the winner belongs to a DIFFERENT userId', async () => {
             prisma.patient.findFirst.mockResolvedValue(PATIENT);
-            prisma.nutritionalPlan.findFirst.mockResolvedValue(null);
+            prisma.nutritionalPlan.findFirst.mockResolvedValueOnce(null);
             prisma.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
             const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
             prisma.nutritionalPlan.create.mockRejectedValue(p2002);
-            prisma.nutritionalPlan.findFirstOrThrow.mockResolvedValue({ id: 'winner-encounter', assessmentId: 'assessment-1', status: 'DRAFT', encounterId: 'enc-1' });
+            // El ganador fue creado por OTRO userId (p.ej. un WorkspaceMember distinto vía el
+            // flujo encounter-scoped) -- encounterId se evalúa ANTES que userId en
+            // assertLegacyDraftReturnable, así que PLAN_LINKED_TO_ENCOUNTER gana sobre
+            // PLAN_DRAFT_OWNED_BY_OTHER_USER.
+            prisma.nutritionalPlan.findFirst.mockResolvedValueOnce({ id: 'winner-encounter', assessmentId: 'assessment-1', status: 'DRAFT', userId: 'user-OTHER', encounterId: 'enc-1' });
 
             try {
                 await service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-1' } as any);
