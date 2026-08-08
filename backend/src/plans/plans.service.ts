@@ -8,7 +8,10 @@ import { AssessmentSnapshot, CalculationMetadata, FinalizationReadiness, PlanCal
 import { ACTIVITY_LEVEL_TO_PAL, DEFAULT_BMR_STRATEGY_ID, DEFAULT_FIBER_SOURCE_ID, DEFAULT_WATER_SOURCE_ID } from '../calculation-engine/defaults';
 import { StrategyResult } from '../calculation-engine/interfaces/calculation-strategy.interface';
 
-const ENGINE_VERSION = 'v1.0.0';
+// No `private`/module-local: reutilizada tal cual por EncounterPlanService (corte 4) para que
+// un plan creado desde el flujo encounter-scoped quede en la misma versión de motor que uno
+// legacy, sin declarar una segunda constante que pudiera divergir.
+export const ENGINE_VERSION = 'v1.0.0';
 
 type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
 type CompletedAssessmentWithTrace = Prisma.AssessmentGetPayload<{
@@ -28,7 +31,12 @@ export class PlansService {
         return patient;
     }
 
-    private async loadCompletedAssessment(client: PrismaClientOrTx, patientId: string, assessmentId: string): Promise<CompletedAssessmentWithTrace> {
+    /**
+     * No `private`: reutilizado tal cual por EncounterPlanService (corte 4) para cargar,
+     * bajo el mismo lock/transacción del caller, el Assessment exacto de un ClinicalEncounter
+     * (nunca "el último COMPLETED del paciente") con la traza completa que buildSnapshotV2 necesita.
+     */
+    async loadCompletedAssessment(client: PrismaClientOrTx, patientId: string, assessmentId: string): Promise<CompletedAssessmentWithTrace> {
         const assessment = await client.assessment.findFirst({
             where: { id: assessmentId, patientId },
             include: { measurements: { include: { definition: true } }, results: true },
@@ -45,8 +53,10 @@ export class PlansService {
      * created (createOrGetDraft) or, for a pre-v2 legacy DRAFT, the one time it's upgraded inside
      * ensureSnapshotV2. Never called again afterwards: recalculate()/finalize() read the
      * persisted snapshot instead of re-deriving it, which is the whole point of freezing it.
+     * No `private`: reutilizado tal cual por EncounterPlanService (corte 4) -- única autoridad de
+     * construcción de snapshot, sin duplicarla para el flujo encounter-scoped.
      */
-    private buildSnapshotV2(
+    buildSnapshotV2(
         assessment: CompletedAssessmentWithTrace,
         patient: { sex: string; activityLevel: string },
     ): AssessmentSnapshot {
@@ -98,8 +108,10 @@ export class PlansService {
      * to rebuild and persist a v2 snapshot from the still-referenced Assessment -- the one and only
      * controlled exception to "never reconstruct sourceSnapshot from current Patient/Assessment
      * state". Already-v2 snapshots pass through untouched and are never rewritten.
+     * No `private`: reutilizado tal cual por EncounterPlanService.recalculate() (corte 4) -- misma
+     * autoridad de upgrade, nunca una segunda reimplementación.
      */
-    private async ensureSnapshotV2(
+    async ensureSnapshotV2(
         tx: Prisma.TransactionClient,
         plan: { patientId: string; assessmentId: string; sourceSnapshot: unknown },
     ): Promise<{ snapshot: AssessmentSnapshot; upgraded: boolean }> {
@@ -112,8 +124,12 @@ export class PlansService {
         return { snapshot: this.buildSnapshotV2(assessment, patient), upgraded: true };
     }
 
-    /** Non-clinical starting point for an editable plan objective -- the nutritionist changes any of this via recalculate. */
-    private defaultPlanInputs(patient: { activityLevel: string }, snapshot: AssessmentSnapshot): RecalculatePlanDto {
+    /**
+     * Non-clinical starting point for an editable plan objective -- the nutritionist changes any
+     * of this via recalculate. No `private`: reutilizado tal cual por EncounterPlanService.createOrGet
+     * (corte 4) para el cálculo inicial del plan encounter-scoped.
+     */
+    defaultPlanInputs(patient: { activityLevel: string }, snapshot: AssessmentSnapshot): RecalculatePlanDto {
         return {
             bmrFormulaId: DEFAULT_BMR_STRATEGY_ID,
             pal: ACTIVITY_LEVEL_TO_PAL[patient.activityLevel] ?? 1.2,
@@ -132,10 +148,16 @@ export class PlansService {
      * (recalculate/finalize) require the plan to be DRAFT; there is no operation that ever takes a
      * FINALIZED plan back to DRAFT, so unlike Assessment's lock helper this one has only one
      * legitimate target status.
+     *
+     * Corte 4: rechaza explícitamente un NutritionalPlan con encounterId no nulo. Las rutas legacy
+     * (userId-scoped) nunca deben poder mutar un plan ligado a un ClinicalEncounter -- eso
+     * permitiría saltarse la autorización por Workspace, el estado del Encounter y la
+     * reconciliación de EncounterModuleState. Esas mutaciones solo pueden hacerse mediante las
+     * rutas encounter-scoped (EncounterPlanService), que usan su propio lock.
      */
     private async lockPlanRow(tx: Prisma.TransactionClient, userId: string, patientId: string, planId: string) {
-        const rows = await tx.$queryRaw<{ id: string; status: string; assessmentId: string }[]>`
-            SELECT p.id, p.status, p."assessmentId"
+        const rows = await tx.$queryRaw<{ id: string; status: string; assessmentId: string; encounterId: string | null }[]>`
+            SELECT p.id, p.status, p."assessmentId", p."encounterId"
             FROM "NutritionalPlan" p
             JOIN "Patient" pt ON pt.id = p."patientId"
             WHERE p.id = ${planId} AND p."patientId" = ${patientId} AND pt."userId" = ${userId}
@@ -143,6 +165,12 @@ export class PlansService {
         `;
         const plan = rows[0];
         if (!plan) throw new NotFoundException('Plan not found');
+        if (plan.encounterId) {
+            throw new ConflictException({
+                code: 'PLAN_LINKED_TO_ENCOUNTER',
+                message: 'Este plan pertenece a una consulta clínica; usa las rutas de la consulta para modificarlo.',
+            });
+        }
         return plan;
     }
 
@@ -153,8 +181,10 @@ export class PlansService {
      * exclusively from `plan.calculationMetadata`, frozen at write time. `canFinalize`/
      * `finalizationBlockers` ARE recomputed fresh on every call (cheap, pure JS over the already-
      * persisted snapshot/config/results), so they're never a stale cached value even on a plain GET.
+     * No `private`: mismo shape clínico/UI reutilizado por EncounterPlanService (corte 4) -- no
+     * crear una segunda representación.
      */
-    private mapToDto(plan: any) {
+    mapToDto(plan: any) {
         const snapshot = plan.sourceSnapshot as AssessmentSnapshot;
         const config = (plan.config ?? {}) as Partial<RecalculatePlanDto>;
         const results = (plan.calculationResults ?? {}) as Record<string, StrategyResult>;
@@ -271,6 +301,15 @@ export class PlansService {
 
         const existing = await this.prisma.nutritionalPlan.findFirst({ where: { patientId, userId, status: 'DRAFT' } });
         if (existing) {
+            // Corte 4: el DRAFT activo del paciente pertenece a un ClinicalEncounter -- la ruta
+            // legacy no debe devolverlo ni mucho menos permitir mutarlo por esta vía (ver
+            // lockPlanRow). El caller debe usar las rutas encounter-scoped.
+            if (existing.encounterId) {
+                throw new ConflictException({
+                    code: 'PLAN_LINKED_TO_ENCOUNTER',
+                    message: 'El borrador activo de este paciente pertenece a una consulta clínica; usa las rutas de la consulta para acceder a él.',
+                });
+            }
             if (existing.assessmentId !== dto.assessmentId) {
                 throw new ConflictException('Ya existe un plan en borrador para otra evaluación; complétalo o descártalo antes de crear uno nuevo.');
             }
@@ -305,7 +344,16 @@ export class PlansService {
         } catch (e) {
             if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
                 // Another concurrent request already created the DRAFT (DB partial-unique-index race).
+                // El ganador puede haber sido una POST .../encounters/:encounterId/plan concurrente
+                // -- si quedó ligado a un ClinicalEncounter, esta ruta legacy NUNCA debe devolverlo
+                // (ni su lectura), igual que ya rechaza el caso no-concurrente de arriba (`existing.encounterId`).
                 const winner = await this.prisma.nutritionalPlan.findFirstOrThrow({ where: { patientId, userId, status: 'DRAFT' } });
+                if (winner.encounterId) {
+                    throw new ConflictException({
+                        code: 'PLAN_LINKED_TO_ENCOUNTER',
+                        message: 'El borrador activo de este paciente pertenece a una consulta clínica; usa las rutas de la consulta para acceder a él.',
+                    });
+                }
                 if (winner.assessmentId !== dto.assessmentId) {
                     throw new ConflictException('Ya existe un plan en borrador para otra evaluación; complétalo o descártalo antes de crear uno nuevo.');
                 }

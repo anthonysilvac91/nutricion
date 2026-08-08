@@ -229,6 +229,11 @@ model ClinicalEncounter {
   // para las reglas completas (histórico vs. encounter-scoped).
   assessment Assessment?
 
+  // Corte 4: a lo sumo un NutritionalPlan oficial por consulta -- el FK único
+  // vive en el lado de NutritionalPlan (NutritionalPlan.encounterId @unique).
+  // Ver comentario ahí para las reglas completas (histórico vs. encounter-scoped).
+  nutritionalPlan NutritionalPlan?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -325,6 +330,11 @@ model Result {
 enum PlanStatus {
   DRAFT
   FINALIZED
+  // Corte 4: borrador abandonado porque su ClinicalEncounter fue descartado.
+  // Histórico, no editable, nunca se reutiliza. Transiciones válidas hacia
+  // ARCHIVED: únicamente DRAFT -> ARCHIVED (por discard() de la consulta).
+  // Nunca FINALIZED -> ARCHIVED, nunca ARCHIVED -> DRAFT, nunca FINALIZED -> DRAFT.
+  ARCHIVED
 }
 
 model NutritionalPlan {
@@ -373,6 +383,16 @@ model NutritionalPlan {
   energyCalc    Json?
   macros        Json?
   micros        Json?
+
+  // Corte 4 (ClinicalEncounter ↔ NutritionalPlan): opcional a propósito. Un
+  // plan histórico/standalone conserva encounterId = NULL para siempre -- no
+  // hay backfill ni inferencia por fecha/assessmentId/patientId. Postgres
+  // permite múltiples NULL bajo UNIQUE, así que coexisten cuantos planes
+  // standalone existan. onDelete: Restrict porque un plan (DRAFT, ARCHIVED o
+  // FINALIZED) nunca debe desaparecer por eliminar la consulta (que de todos
+  // modos tampoco se borra físicamente).
+  encounterId String?            @unique
+  encounter   ClinicalEncounter? @relation(fields: [encounterId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
