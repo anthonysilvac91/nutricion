@@ -478,4 +478,66 @@ describe('PlansService', () => {
             await expect(service.finalize('user-1', 'patient-1', 'plan-1')).rejects.toThrow(ConflictException);
         });
     });
+
+    // Corte 4: las rutas legacy (userId-scoped) nunca deben poder mutar un
+    // NutritionalPlan ligado a un ClinicalEncounter -- ver lockPlanRow.
+    describe('legacy routes cannot mutate a Plan linked to a ClinicalEncounter (corte 4)', () => {
+        function mockLockRowLinkedToEncounter(status = 'DRAFT') {
+            tx.$queryRaw.mockResolvedValue([{ id: 'plan-1', status, assessmentId: 'assessment-1', encounterId: 'enc-1' }]);
+        }
+
+        it('recalculate rejects with 409 PLAN_LINKED_TO_ENCOUNTER', async () => {
+            mockLockRowLinkedToEncounter();
+            try {
+                await service.recalculate('user-1', 'patient-1', 'plan-1', VALID_RECALCULATE_DTO);
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('PLAN_LINKED_TO_ENCOUNTER');
+            }
+            expect(tx.nutritionalPlan.update).not.toHaveBeenCalled();
+        });
+
+        it('finalize rejects with 409 PLAN_LINKED_TO_ENCOUNTER', async () => {
+            mockLockRowLinkedToEncounter();
+            try {
+                await service.finalize('user-1', 'patient-1', 'plan-1');
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('PLAN_LINKED_TO_ENCOUNTER');
+            }
+            expect(tx.nutritionalPlan.updateMany).not.toHaveBeenCalled();
+        });
+
+        it('createOrGetDraft rejects with 409 PLAN_LINKED_TO_ENCOUNTER when the patient active DRAFT belongs to a consultation', async () => {
+            prisma.patient.findFirst.mockResolvedValue(PATIENT);
+            prisma.nutritionalPlan.findFirst.mockResolvedValue({ id: 'plan-existing', status: 'DRAFT', assessmentId: 'assessment-1', encounterId: 'enc-1' });
+
+            try {
+                await service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-1' } as any);
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('PLAN_LINKED_TO_ENCOUNTER');
+            }
+        });
+
+        it('resolves a P2002 race against an ENCOUNTER-LINKED winner with 409 PLAN_LINKED_TO_ENCOUNTER -- never returns it, even under a race', async () => {
+            prisma.patient.findFirst.mockResolvedValue(PATIENT);
+            prisma.nutritionalPlan.findFirst.mockResolvedValue(null);
+            prisma.assessment.findFirst.mockResolvedValue(COMPLETED_ASSESSMENT);
+            const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
+            prisma.nutritionalPlan.create.mockRejectedValue(p2002);
+            prisma.nutritionalPlan.findFirstOrThrow.mockResolvedValue({ id: 'winner-encounter', assessmentId: 'assessment-1', status: 'DRAFT', encounterId: 'enc-1' });
+
+            try {
+                await service.createOrGetDraft('user-1', 'patient-1', { assessmentId: 'assessment-1' } as any);
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('PLAN_LINKED_TO_ENCOUNTER');
+            }
+        });
+    });
 });
