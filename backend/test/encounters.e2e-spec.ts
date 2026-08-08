@@ -275,21 +275,13 @@ describe('Encounters (e2e)', () => {
     });
   });
 
-  describe('Patient with workspaceId null', () => {
-    it('returns 404 (not a distinguishable error) on create/list/detail', async () => {
-      const { token } = await registerNutritionist('null-workspace');
-      const patientId = await createPatient(token, 'NullWorkspace');
-      await prisma.patient.update({ where: { id: patientId }, data: { workspaceId: null } });
-
-      await request(app.getHttpServer())
-        .post(`/patients/${patientId}/encounters`)
-        .set('Authorization', `Bearer ${token}`)
-        .send(createEncounterBody())
-        .expect(404);
-
-      await request(app.getHttpServer()).get(`/patients/${patientId}/encounters`).set('Authorization', `Bearer ${token}`).expect(404);
-    });
-  });
+  // "Patient with workspaceId null" (PATIENT_WORKSPACE_NOT_READY / 404 sobre
+  // un Patient con workspaceId null) se eliminó tras la Migración B
+  // (require_patient_workspace): la columna es NOT NULL a nivel de Postgres,
+  // así que ese estado ya no es representable ni con un UPDATE directo --
+  // Prisma ni siquiera permite compilar `data: { workspaceId: null }` contra
+  // el tipo generado. La garantía que ese test buscaba (ningún Patient sin
+  // Workspace) ahora la da la base de datos misma, no la capa de aplicación.
 
   describe('Discard validation', () => {
     it('rejects a discardReason made only of whitespace with 400', async () => {
