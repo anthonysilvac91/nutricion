@@ -527,6 +527,26 @@ describe('Encounter Assessment (e2e)', () => {
         .send({ measurements: [{ definitionId: 'm_weight', numericValue: 70 }] })
         .expect(404);
       await request(app.getHttpServer()).post(assessmentPath(patientId, encounter.id) + '/complete').set('Authorization', `Bearer ${userB.token}`).expect(404);
+
+      // Las lecturas BASE de ClinicalEncounter (findOneForPatient/findAllByPatient)
+      // deben aplicar exactamente la misma consistencia estructural que ya se
+      // exige aquí para el Assessment -- ni el detalle ni el listado deben
+      // exponer un Encounter corrompido, ni siquiera a un miembro del Workspace
+      // al que ahora "apunta" incorrectamente.
+      await request(app.getHttpServer())
+        .get(`/patients/${patientId}/encounters/${encounter.id}`)
+        .set('Authorization', `Bearer ${userA.token}`)
+        .expect(404);
+      await request(app.getHttpServer())
+        .get(`/patients/${patientId}/encounters/${encounter.id}`)
+        .set('Authorization', `Bearer ${userB.token}`)
+        .expect(404);
+
+      const listAsOwner = await request(app.getHttpServer())
+        .get(`/patients/${patientId}/encounters`)
+        .set('Authorization', `Bearer ${userA.token}`)
+        .expect(200);
+      expect(listAsOwner.body.data.some((e: any) => e.id === encounter.id)).toBe(false);
     });
   });
 

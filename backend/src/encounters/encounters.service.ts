@@ -224,17 +224,22 @@ export class EncountersService {
 
   // GET /patients/:patientId/encounters
   async findAllByPatient(userId: string, patientId: string, query: FindEncountersDto) {
-    await this.requireAccessiblePatientWorkspace(userId, patientId);
+    const { workspaceId } = await this.requireAccessiblePatientWorkspace(userId, patientId);
 
     const page = query.page || 1;
     const pageSize = query.pageSize || 10;
     const skip = (page - 1) * pageSize;
 
-    // El filtro de WorkspaceMember se repite aquí como defensa en profundidad
-    // -- la consulta que realmente devuelve datos nunca depende exclusivamente
-    // del chequeo de acceso hecho arriba.
+    // workspaceId es el Workspace REAL del Patient (ya resuelto y verificado
+    // arriba) -- exigirlo también aquí excluye cualquier ClinicalEncounter
+    // estructuralmente inconsistente (workspaceId propio distinto al del
+    // Patient), sin importar si el caller también es miembro de ESE otro
+    // Workspace. El filtro de WorkspaceMember se mantiene como defensa en
+    // profundidad -- la consulta que realmente devuelve datos nunca depende
+    // de un solo chequeo.
     const where: Prisma.ClinicalEncounterWhereInput = {
       patientId,
+      workspaceId,
       workspace: { members: { some: { userId } } },
       ...(query.status ? { status: query.status } : {}),
       ...(query.profile ? { profile: query.profile } : {}),
@@ -267,12 +272,16 @@ export class EncountersService {
 
   // GET /patients/:patientId/encounters/:encounterId
   async findOneForPatient(userId: string, patientId: string, encounterId: string) {
-    const encounter = await this.prisma.clinicalEncounter.findFirst({
-      where: {
-        id: encounterId,
-        patientId,
-        workspace: { members: { some: { userId } } },
-      },
+    // Misma autorización que toda operación encounter-scoped (lockEncounterForWrite
+    // / EncounterAssessmentService.findOne): existencia, pertenencia al paciente,
+    // Patient.workspaceId = Encounter.workspaceId, y membership del usuario --
+    // nunca una segunda definición ad-hoc que solo mire el Workspace del Encounter.
+    // Un Patient.workspaceId != Encounter.workspaceId da 404 aquí aunque el
+    // usuario sea miembro del Workspace (incorrecto) al que apunta el Encounter.
+    await this.findAccessibleEncounterForRead(userId, patientId, encounterId);
+
+    const encounter = await this.prisma.clinicalEncounter.findUnique({
+      where: { id: encounterId },
       // select mínimo del Assessment asociado -- solo su id, nunca sus
       // MeasurementRecord/CalculatedResult aquí (evitar N+1 / payload innecesario).
       include: { modules: true, assessment: { select: { id: true } } },
