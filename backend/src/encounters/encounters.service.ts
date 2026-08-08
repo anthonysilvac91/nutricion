@@ -24,6 +24,7 @@ type EncounterRow = {
   consultationReason: string | null;
   discardReason: string | null;
   notes?: string | null;
+  assessment?: { id: string } | null;
 };
 
 @Injectable()
@@ -32,24 +33,21 @@ export class EncountersService {
 
   /**
    * Autorización por Workspace (no por Patient.userId), resuelta en una sola
-   * consulta: un Patient inexistente, un Patient con workspaceId null
-   * (columna nullable hasta la Migración B, ver corte 1), un Patient de otro
-   * Workspace, y un usuario sin membership en ese Workspace son
-   * indistinguibles desde afuera -- los cuatro casos producen exactamente el
-   * mismo `patient === null` aquí y el mismo 404 en el llamador. Nunca 403,
-   * y nunca un código distinto (ej. "el paciente no tiene workspace") que
-   * permitiría a alguien sin ninguna relación con el paciente deducir su
-   * existencia o estado.
+   * consulta: un Patient inexistente, un Patient de otro Workspace, y un
+   * usuario sin membership en ese Workspace son indistinguibles desde afuera
+   * -- los tres casos producen exactamente el mismo `patient === null` aquí y
+   * el mismo 404 en el llamador. Nunca 403, y nunca un código distinto (ej.
+   * "el paciente no tiene workspace") que permitiría a alguien sin ninguna
+   * relación con el paciente deducir su existencia o estado.
    */
   private async resolveAccessiblePatientWorkspace(userId: string, patientId: string): Promise<{ workspaceId: string } | null> {
     const patient = await this.prisma.patient.findFirst({
       where: { id: patientId, workspace: { members: { some: { userId } } } },
       select: { workspaceId: true },
     });
-    // patient.workspaceId no puede ser null aquí -- el filtro `workspace: {...}`
-    // sólo matchea cuando existe un Workspace con esa membership, pero Prisma
-    // sigue tipando el campo como nullable porque no lo sabe estáticamente.
-    if (!patient || !patient.workspaceId) return null;
+    // Patient.workspaceId es NOT NULL desde la Migración B (ver corte 1) -- ya
+    // no hace falta contemplar un Patient sin Workspace.
+    if (!patient) return null;
     return { workspaceId: patient.workspaceId };
   }
 
@@ -57,6 +55,104 @@ export class EncountersService {
     const access = await this.resolveAccessiblePatientWorkspace(userId, patientId);
     if (!access) throw new NotFoundException('Patient not found');
     return access;
+  }
+
+  /**
+   * Fragmento de autorización compartido por toda consulta encounter-scoped
+   * (lectura o escritura): existencia, pertenencia al paciente, consistencia
+   * Patient.workspaceId = Encounter.workspaceId, y membership del usuario en
+   * ese Workspace. Nunca se confía únicamente en la membership del Workspace
+   * del Encounter -- si Patient.workspaceId y Encounter.workspaceId
+   * divergieran (dato inconsistente), este JOIN los hace indistinguibles de
+   * "no existe" y produce 404 en ambos casos.
+   */
+  private encounterAccessJoin(userId: string, patientId: string, encounterId: string) {
+    return Prisma.sql`
+      FROM "ClinicalEncounter" e
+      JOIN "Patient" p ON p.id = e."patientId" AND p."workspaceId" = e."workspaceId"
+      JOIN "WorkspaceMember" m ON m."workspaceId" = e."workspaceId" AND m."userId" = ${userId}
+      WHERE e.id = ${encounterId} AND e."patientId" = ${patientId}
+    `;
+  }
+
+  /**
+   * Lock compartido de ClinicalEncounter para cualquier operación de escritura
+   * encounter-scoped (discard aquí, y EncounterAssessmentService en el corte 3).
+   * Mismo JOIN de autorización que findAccessibleEncounterForRead, con
+   * FOR UPDATE OF e -- mismo patrón que AssessmentsService.lockDraftAssessment
+   * / PlansService.lockPlanRow.
+   *
+   * Orden estable de locks para operaciones que necesitan Encounter + Assessment:
+   * 1) ClinicalEncounter (este método), 2) Assessment -- siempre en ese orden,
+   * para no exponernos a deadlocks entre distintas operaciones concurrentes.
+   */
+  async lockEncounterForWrite(tx: Prisma.TransactionClient, userId: string, patientId: string, encounterId: string) {
+    const rows = await tx.$queryRaw<{ id: string; status: string; clinicalDate: Date }[]>(Prisma.sql`
+      SELECT e.id, e.status, e."clinicalDate"
+      ${this.encounterAccessJoin(userId, patientId, encounterId)}
+      FOR UPDATE OF e
+    `);
+    const encounter = rows[0];
+    if (!encounter) throw new NotFoundException('Encounter not found');
+    return encounter;
+  }
+
+  /**
+   * Misma autorización que lockEncounterForWrite pero sin lock de fila y sin
+   * requerir una transacción -- para rutas de solo lectura encounter-scoped
+   * (ej. GET .../assessment) que deben validar exactamente la misma
+   * consistencia estructural que las mutaciones, sin pagar el costo de un
+   * FOR UPDATE innecesario para una lectura.
+   */
+  async findAccessibleEncounterForRead(userId: string, patientId: string, encounterId: string) {
+    const rows = await this.prisma.$queryRaw<{ id: string; status: string; clinicalDate: Date }[]>(Prisma.sql`
+      SELECT e.id, e.status, e."clinicalDate"
+      ${this.encounterAccessJoin(userId, patientId, encounterId)}
+    `);
+    const encounter = rows[0];
+    if (!encounter) throw new NotFoundException('Encounter not found');
+    return encounter;
+  }
+
+  /**
+   * Reconcilia EncounterModuleState(module=MEASUREMENTS) contra el estado real
+   * del Assessment asociado -- Assessment es la autoridad clínica,
+   * EncounterModuleState es solo una proyección de progreso (ver corte 2/3).
+   *
+   * Un ClinicalEncounter válido de foundation-v1 SIEMPRE nace con su fila
+   * EncounterModuleState.MEASUREMENTS (ver create() + foundation-flow.constants).
+   * Si esa fila no existe, no es un caso normal de negocio -- es una
+   * inconsistencia de datos, y silenciarla permitiría completar un Assessment
+   * (efecto clínico real) perdiendo para siempre la proyección de progreso de
+   * la consulta. Se trata como error: lanza y deja que la transacción llamante
+   * (createOrGet/complete) haga ROLLBACK completo, así el Assessment nunca
+   * queda a medio completar cuando el módulo no puede reconciliarse.
+   *
+   * applicability === NOT_APPLICABLE sí es un caso normal (no debería ocurrir
+   * con foundation-v1 hoy, pero esta llamada no se acopla rígidamente a esa
+   * suposición): es un no-op permitido, nunca un error.
+   */
+  async reconcileMeasurementsModule(
+    tx: Prisma.TransactionClient,
+    encounterId: string,
+    status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED',
+    completedAt: Date | null,
+  ): Promise<void> {
+    const moduleState = await tx.encounterModuleState.findUnique({
+      where: { encounterId_module: { encounterId, module: EncounterModule.MEASUREMENTS } },
+    });
+    if (!moduleState) {
+      throw new ConflictException({
+        code: 'ENCOUNTER_MODULE_STATE_MISSING',
+        message: 'No se encontró el estado del módulo MEASUREMENTS para esta consulta; no se puede reconciliar el progreso.',
+      });
+    }
+    if (moduleState.applicability === 'NOT_APPLICABLE') return;
+
+    await tx.encounterModuleState.update({
+      where: { encounterId_module: { encounterId, module: EncounterModule.MEASUREMENTS } },
+      data: { status, completedAt },
+    });
   }
 
   // POST /patients/:patientId/encounters
@@ -128,17 +224,22 @@ export class EncountersService {
 
   // GET /patients/:patientId/encounters
   async findAllByPatient(userId: string, patientId: string, query: FindEncountersDto) {
-    await this.requireAccessiblePatientWorkspace(userId, patientId);
+    const { workspaceId } = await this.requireAccessiblePatientWorkspace(userId, patientId);
 
     const page = query.page || 1;
     const pageSize = query.pageSize || 10;
     const skip = (page - 1) * pageSize;
 
-    // El filtro de WorkspaceMember se repite aquí como defensa en profundidad
-    // -- la consulta que realmente devuelve datos nunca depende exclusivamente
-    // del chequeo de acceso hecho arriba.
+    // workspaceId es el Workspace REAL del Patient (ya resuelto y verificado
+    // arriba) -- exigirlo también aquí excluye cualquier ClinicalEncounter
+    // estructuralmente inconsistente (workspaceId propio distinto al del
+    // Patient), sin importar si el caller también es miembro de ESE otro
+    // Workspace. El filtro de WorkspaceMember se mantiene como defensa en
+    // profundidad -- la consulta que realmente devuelve datos nunca depende
+    // de un solo chequeo.
     const where: Prisma.ClinicalEncounterWhereInput = {
       patientId,
+      workspaceId,
       workspace: { members: { some: { userId } } },
       ...(query.status ? { status: query.status } : {}),
       ...(query.profile ? { profile: query.profile } : {}),
@@ -171,13 +272,19 @@ export class EncountersService {
 
   // GET /patients/:patientId/encounters/:encounterId
   async findOneForPatient(userId: string, patientId: string, encounterId: string) {
-    const encounter = await this.prisma.clinicalEncounter.findFirst({
-      where: {
-        id: encounterId,
-        patientId,
-        workspace: { members: { some: { userId } } },
-      },
-      include: { modules: true },
+    // Misma autorización que toda operación encounter-scoped (lockEncounterForWrite
+    // / EncounterAssessmentService.findOne): existencia, pertenencia al paciente,
+    // Patient.workspaceId = Encounter.workspaceId, y membership del usuario --
+    // nunca una segunda definición ad-hoc que solo mire el Workspace del Encounter.
+    // Un Patient.workspaceId != Encounter.workspaceId da 404 aquí aunque el
+    // usuario sea miembro del Workspace (incorrecto) al que apunta el Encounter.
+    await this.findAccessibleEncounterForRead(userId, patientId, encounterId);
+
+    const encounter = await this.prisma.clinicalEncounter.findUnique({
+      where: { id: encounterId },
+      // select mínimo del Assessment asociado -- solo su id, nunca sus
+      // MeasurementRecord/CalculatedResult aquí (evitar N+1 / payload innecesario).
+      include: { modules: true, assessment: { select: { id: true } } },
     });
     if (!encounter) throw new NotFoundException('Encounter not found');
 
@@ -187,25 +294,26 @@ export class EncountersService {
   // POST /patients/:patientId/encounters/:encounterId/discard
   async discard(userId: string, patientId: string, encounterId: string, dto: DiscardEncounterDto) {
     await this.prisma.$transaction(async (tx) => {
-      // Combina en una sola consulta: existencia, pertenencia al paciente,
-      // membership del usuario en el Workspace del Encounter, y el lock de
-      // fila -- mismo patrón que AssessmentsService.lockDraftAssessment /
-      // PlansService.lockPlanRow, adaptado a autorización por Workspace.
-      const rows = await tx.$queryRaw<{ id: string; status: string }[]>`
-        SELECT e.id, e.status
-        FROM "ClinicalEncounter" e
-        JOIN "WorkspaceMember" m ON m."workspaceId" = e."workspaceId" AND m."userId" = ${userId}
-        WHERE e.id = ${encounterId} AND e."patientId" = ${patientId}
-        FOR UPDATE OF e
-      `;
-      const encounter = rows[0];
-      if (!encounter) throw new NotFoundException('Encounter not found');
+      const encounter = await this.lockEncounterForWrite(tx, userId, patientId, encounterId);
       if (encounter.status !== EncounterStatus.IN_PROGRESS) {
         throw new ConflictException({
           code: 'ENCOUNTER_NOT_IN_PROGRESS',
           message: 'La consulta ya no está en curso.',
         });
       }
+
+      // Un Assessment DRAFT ligado a esta consulta no puede seguir "abierto"
+      // una vez que la consulta se descarta -- se archiva (nunca se borra) para
+      // liberar el índice de "un DRAFT por paciente" y dejar de bloquear al
+      // paciente para futuras consultas. Nunca se borran sus MeasurementRecord.
+      // Si el Assessment ya está COMPLETED, este updateMany no lo toca (el
+      // filtro exige status='DRAFT') -- se preserva tal cual, con sus
+      // resultados clínicos intactos. EncounterModuleState no se toca: el
+      // Encounter ya queda DISCARDED, no hay progreso clínico que inventar.
+      await tx.assessment.updateMany({
+        where: { encounterId, status: 'DRAFT' },
+        data: { status: 'ARCHIVED' },
+      });
 
       // Defensive belt-and-suspenders: el lock FOR UPDATE ya garantiza que esto
       // no puede afectar 0 filas en la práctica, pero el WHERE condicional +
@@ -279,6 +387,7 @@ export class EncountersService {
       discardReason: row.discardReason,
       notes: row.notes ?? null,
       responsibleProfessionalId: row.responsibleProfessionalId,
+      assessmentId: row.assessment?.id ?? null,
       modules: modules.map((m) => ({
         module: m.module,
         applicability: m.applicability,

@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { Prisma } from '@prisma/client';
 import { AssessmentsService } from './assessments.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ContextResolverService } from './context-resolver.service';
@@ -183,6 +184,80 @@ describe('AssessmentsService', () => {
                 data: { patientId: 'patient-1', date: new Date('2026-07-26T12:00:00.000Z'), status: 'DRAFT' },
             });
             expect(result.date).toBe('2026-07-26');
+        });
+
+        it('resolves a P2002 race against a STANDALONE winner by returning it normally', async () => {
+            prisma.patient.findFirst.mockResolvedValue({ id: 'patient-1' });
+            prisma.assessment.findFirst.mockResolvedValueOnce(null); // no existing DRAFT visto por el pre-chequeo
+            const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
+            prisma.assessment.create.mockRejectedValue(p2002);
+            // findFirstOrThrow resuelve al ganador real de la carrera.
+            prisma.assessment.findFirstOrThrow.mockResolvedValue({ id: 'winner-standalone', encounterId: null });
+            prisma.assessment.findFirst.mockResolvedValueOnce({ id: 'winner-standalone', date: new Date('2026-07-26T12:00:00.000Z'), measurements: [], results: [] });
+
+            const result = await service.createOrGetDraft('user-1', 'patient-1', {});
+            expect(result.id).toBe('winner-standalone');
+        });
+
+        it('resolves a P2002 race against an ENCOUNTER-LINKED winner with 409 ASSESSMENT_LINKED_TO_ENCOUNTER -- never returns it, even under a race', async () => {
+            prisma.patient.findFirst.mockResolvedValue({ id: 'patient-1' });
+            prisma.assessment.findFirst.mockResolvedValueOnce(null); // no existing DRAFT visto por el pre-chequeo
+            const p2002 = new Prisma.PrismaClientKnownRequestError('unique violation', { code: 'P2002', clientVersion: 'x' });
+            prisma.assessment.create.mockRejectedValue(p2002);
+            prisma.assessment.findFirstOrThrow.mockResolvedValue({ id: 'winner-encounter', encounterId: 'enc-1' });
+
+            try {
+                await service.createOrGetDraft('user-1', 'patient-1', {});
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('ASSESSMENT_LINKED_TO_ENCOUNTER');
+            }
+        });
+    });
+
+    // Corte 3: las rutas legacy (userId-scoped) nunca deben poder mutar un
+    // Assessment ligado a un ClinicalEncounter -- ver lockDraftAssessment.
+    describe('legacy routes cannot mutate an Assessment linked to a ClinicalEncounter', () => {
+        function mockLockRowLinkedToEncounter() {
+            tx.$queryRaw.mockResolvedValue([{ id: 'assessment-1', status: 'DRAFT', encounterId: 'enc-1' }]);
+        }
+
+        it('upsertMeasurements rejects with 409 ASSESSMENT_LINKED_TO_ENCOUNTER', async () => {
+            mockLockRowLinkedToEncounter();
+            try {
+                await service.upsertMeasurements('user-1', 'patient-1', 'assessment-1', { measurements: [{ definitionId: 'm_weight', numericValue: 70 }] });
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('ASSESSMENT_LINKED_TO_ENCOUNTER');
+            }
+            expect(tx.measurementRecord.upsert).not.toHaveBeenCalled();
+        });
+
+        it('removeMeasurement rejects with 409 ASSESSMENT_LINKED_TO_ENCOUNTER', async () => {
+            mockLockRowLinkedToEncounter();
+            await expect(service.removeMeasurement('user-1', 'patient-1', 'assessment-1', 'm_weight')).rejects.toThrow(ConflictException);
+            expect(tx.measurementRecord.deleteMany).not.toHaveBeenCalled();
+        });
+
+        it('complete rejects with 409 ASSESSMENT_LINKED_TO_ENCOUNTER', async () => {
+            mockLockRowLinkedToEncounter();
+            await expect(service.complete('user-1', 'patient-1', 'assessment-1')).rejects.toThrow(ConflictException);
+            expect(tx.calculatedResult.deleteMany).not.toHaveBeenCalled();
+        });
+
+        it('createOrGetDraft rejects with 409 ASSESSMENT_LINKED_TO_ENCOUNTER when the patient active DRAFT belongs to a consultation', async () => {
+            prisma.patient.findFirst.mockResolvedValue({ id: 'patient-1' });
+            prisma.assessment.findFirst.mockResolvedValue({ id: 'draft-1', status: 'DRAFT', encounterId: 'enc-1' });
+
+            try {
+                await service.createOrGetDraft('user-1', 'patient-1', {});
+                fail('expected to throw');
+            } catch (e: any) {
+                expect(e).toBeInstanceOf(ConflictException);
+                expect(e.getResponse().code).toBe('ASSESSMENT_LINKED_TO_ENCOUNTER');
+            }
         });
     });
 

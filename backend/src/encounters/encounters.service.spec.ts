@@ -7,11 +7,14 @@ function buildPrismaMock() {
   const tx = {
     $queryRaw: jest.fn(),
     clinicalEncounter: { create: jest.fn(), updateMany: jest.fn() },
-    encounterModuleState: { createMany: jest.fn() },
+    encounterModuleState: { createMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+    assessment: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
   };
   const prisma = {
     patient: { findFirst: jest.fn() },
-    clinicalEncounter: { findFirst: jest.fn(), findMany: jest.fn(), count: jest.fn() },
+    clinicalEncounter: { findFirst: jest.fn(), findUnique: jest.fn(), findMany: jest.fn(), count: jest.fn() },
+    // Usado por findAccessibleEncounterForRead (lectura sin lock, fuera de una transacción).
+    $queryRaw: jest.fn(),
     // Soporta ambas formas de $transaction: callback (create/discard) y array (findAllByPatient).
     $transaction: jest.fn((arg: any) => (typeof arg === 'function' ? arg(tx) : Promise.all(arg))),
   };
@@ -24,6 +27,10 @@ const VALID_DTO = {
   clinicalDate: '2026-08-04',
   consultationReason: 'Control nutricional',
 };
+
+// Fila devuelta por findAccessibleEncounterForRead (prisma.$queryRaw) -- la
+// autorización que findOneForPatient ahora exige antes de leer el detalle.
+const ACCESS_ROW = [{ id: 'enc-1', status: 'IN_PROGRESS', clinicalDate: new Date('2026-08-04T12:00:00.000Z') }];
 
 function fullDetailFixture(overrides: Record<string, any> = {}) {
   return {
@@ -69,9 +76,9 @@ describe('EncountersService', () => {
   describe('create', () => {
     it('assigns the patient workspace and the authenticated user as responsible, creating exactly 9 modules in the same transaction', async () => {
       prisma.patient.findFirst.mockResolvedValue({ workspaceId: 'ws-1' });
-      prisma.clinicalEncounter.findFirst
-        .mockResolvedValueOnce(null) // pre-chequeo: sin IN_PROGRESS existente
-        .mockResolvedValueOnce(fullDetailFixture()); // findOneForPatient posterior al create
+      prisma.clinicalEncounter.findFirst.mockResolvedValueOnce(null); // pre-chequeo: sin IN_PROGRESS existente
+      prisma.$queryRaw.mockResolvedValueOnce(ACCESS_ROW); // findAccessibleEncounterForRead dentro de findOneForPatient posterior al create
+      prisma.clinicalEncounter.findUnique.mockResolvedValueOnce(fullDetailFixture());
       tx.clinicalEncounter.create.mockResolvedValue({ id: 'enc-1' });
       tx.encounterModuleState.createMany.mockResolvedValue({ count: 9 });
 
@@ -149,6 +156,7 @@ describe('EncountersService', () => {
         expect.objectContaining({
           where: expect.objectContaining({
             patientId: 'patient-1',
+            workspaceId: 'ws-1',
             workspace: { members: { some: { userId: 'user-1' } } },
           }),
           orderBy: [{ clinicalDate: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
@@ -160,12 +168,37 @@ describe('EncountersService', () => {
       prisma.patient.findFirst.mockResolvedValue(null);
       await expect(service.findAllByPatient('user-1', 'patient-1', {} as any)).rejects.toThrow(NotFoundException);
     });
+
+    it('excludes a structurally inconsistent ClinicalEncounter (its own workspaceId != the Patient real workspaceId) even if the caller happens to be a member of that other workspace', async () => {
+      prisma.patient.findFirst.mockResolvedValue({ workspaceId: 'ws-1' });
+      prisma.clinicalEncounter.findMany.mockResolvedValue([]);
+      prisma.clinicalEncounter.count.mockResolvedValue(0);
+
+      await service.findAllByPatient('user-1', 'patient-1', { page: 1, pageSize: 10 } as any);
+
+      // El where real exige workspaceId = 'ws-1' (el del Patient) -- un
+      // Encounter con workspaceId distinto (p.ej. 'ws-2') nunca matchea, sin
+      // importar si el caller también es miembro de 'ws-2'.
+      expect(prisma.clinicalEncounter.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ workspaceId: 'ws-1' }) }),
+      );
+    });
   });
 
   describe('findOneForPatient', () => {
-    it('returns 404 when the encounter does not belong to the caller workspace', async () => {
-      prisma.clinicalEncounter.findFirst.mockResolvedValue(null);
+    it('returns 404 when the encounter does not belong to the caller workspace (findAccessibleEncounterForRead finds nothing)', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
       await expect(service.findOneForPatient('user-1', 'patient-1', 'enc-1')).rejects.toThrow(NotFoundException);
+      expect(prisma.clinicalEncounter.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a structurally inconsistent Encounter (Patient.workspaceId != Encounter.workspaceId), reusing the exact same authorization as findAccessibleEncounterForRead -- never a second definition', async () => {
+      // findAccessibleEncounterForRead ya exige p."workspaceId" = e."workspaceId"
+      // -- si divergen, el JOIN no matchea nada, sin importar si el detalle en
+      // sí sería consultable directamente por id.
+      prisma.$queryRaw.mockResolvedValue([]);
+      await expect(service.findOneForPatient('user-1', 'patient-1', 'enc-1')).rejects.toThrow(NotFoundException);
+      expect(prisma.clinicalEncounter.findUnique).not.toHaveBeenCalled();
     });
 
     it('orders modules by ENCOUNTER_MODULE_ORDER regardless of the order returned by the DB', async () => {
@@ -174,7 +207,8 @@ describe('EncountersService', () => {
         { module: 'SUMMARY', applicability: 'NOT_APPLICABLE', status: 'NOT_APPLICABLE', completedAt: null },
         { module: 'MEASUREMENTS', applicability: 'REQUIRED', status: 'PENDING', completedAt: null },
       ];
-      prisma.clinicalEncounter.findFirst.mockResolvedValue(fullDetailFixture({ modules: shuffled }));
+      prisma.$queryRaw.mockResolvedValue(ACCESS_ROW);
+      prisma.clinicalEncounter.findUnique.mockResolvedValue(fullDetailFixture({ modules: shuffled }));
 
       const detail = await service.findOneForPatient('user-1', 'patient-1', 'enc-1');
 
@@ -190,7 +224,8 @@ describe('EncountersService', () => {
         { module: 'PLANNING', applicability: 'NOT_APPLICABLE', status: 'NOT_APPLICABLE', completedAt: null },
         { module: 'MEAL_PLAN', applicability: 'OPTIONAL', status: 'PENDING', completedAt: null },
       ];
-      prisma.clinicalEncounter.findFirst.mockResolvedValue(fullDetailFixture({ modules }));
+      prisma.$queryRaw.mockResolvedValue(ACCESS_ROW);
+      prisma.clinicalEncounter.findUnique.mockResolvedValue(fullDetailFixture({ modules }));
 
       const detail = await service.findOneForPatient('user-1', 'patient-1', 'enc-1');
 
@@ -203,7 +238,8 @@ describe('EncountersService', () => {
     it('discards a valid IN_PROGRESS encounter, sets discardedAt, and never touches consultationReason', async () => {
       tx.$queryRaw.mockResolvedValue([{ id: 'enc-1', status: 'IN_PROGRESS' }]);
       tx.clinicalEncounter.updateMany.mockResolvedValue({ count: 1 });
-      prisma.clinicalEncounter.findFirst.mockResolvedValue(
+      prisma.$queryRaw.mockResolvedValue(ACCESS_ROW);
+      prisma.clinicalEncounter.findUnique.mockResolvedValue(
         fullDetailFixture({ status: 'DISCARDED', discardedAt: new Date(), discardReason: 'No show' }),
       );
 
@@ -219,6 +255,21 @@ describe('EncountersService', () => {
       expect(result.consultationReason).toBe('Control nutricional');
     });
 
+    it('archives a DRAFT Assessment linked to the encounter being discarded, without touching MeasurementRecord', async () => {
+      tx.$queryRaw.mockResolvedValue([{ id: 'enc-1', status: 'IN_PROGRESS' }]);
+      tx.clinicalEncounter.updateMany.mockResolvedValue({ count: 1 });
+      tx.assessment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.$queryRaw.mockResolvedValue(ACCESS_ROW);
+      prisma.clinicalEncounter.findUnique.mockResolvedValue(fullDetailFixture({ status: 'DISCARDED' }));
+
+      await service.discard('user-1', 'patient-1', 'enc-1', { discardReason: 'No show' } as any);
+
+      expect(tx.assessment.updateMany).toHaveBeenCalledWith({
+        where: { encounterId: 'enc-1', status: 'DRAFT' },
+        data: { status: 'ARCHIVED' },
+      });
+    });
+
     it('a second discard on an already-DISCARDED encounter returns 409 ENCOUNTER_NOT_IN_PROGRESS', async () => {
       tx.$queryRaw.mockResolvedValue([{ id: 'enc-1', status: 'DISCARDED' }]);
 
@@ -229,6 +280,69 @@ describe('EncountersService', () => {
     it('returns 404 when the encounter is not visible from the caller workspace (lock query finds nothing)', async () => {
       tx.$queryRaw.mockResolvedValue([]);
       await expect(service.discard('user-1', 'patient-1', 'enc-1', { discardReason: 'No show' } as any)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('findOneForPatient (assessmentId exposure)', () => {
+    it('exposes assessmentId from the associated Assessment, or null when there is none', async () => {
+      prisma.$queryRaw.mockResolvedValue(ACCESS_ROW);
+      prisma.clinicalEncounter.findUnique.mockResolvedValueOnce(fullDetailFixture({ assessment: { id: 'assessment-1' } }));
+      const withAssessment = await service.findOneForPatient('user-1', 'patient-1', 'enc-1');
+      expect(withAssessment.assessmentId).toBe('assessment-1');
+
+      prisma.clinicalEncounter.findUnique.mockResolvedValueOnce(fullDetailFixture({ assessment: null }));
+      const withoutAssessment = await service.findOneForPatient('user-1', 'patient-1', 'enc-1');
+      expect(withoutAssessment.assessmentId).toBeNull();
+    });
+  });
+
+  describe('reconcileMeasurementsModule', () => {
+    it('updates MEASUREMENTS status/completedAt when applicability is not NOT_APPLICABLE', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue({ applicability: 'REQUIRED' });
+      const completedAt = new Date();
+
+      await service.reconcileMeasurementsModule(tx as any, 'enc-1', 'COMPLETED', completedAt);
+
+      expect(tx.encounterModuleState.update).toHaveBeenCalledWith({
+        where: { encounterId_module: { encounterId: 'enc-1', module: 'MEASUREMENTS' } },
+        data: { status: 'COMPLETED', completedAt },
+      });
+    });
+
+    it('is a silent no-op when MEASUREMENTS applicability is NOT_APPLICABLE (never forces an incoherent state)', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue({ applicability: 'NOT_APPLICABLE' });
+
+      await service.reconcileMeasurementsModule(tx as any, 'enc-1', 'COMPLETED', new Date());
+
+      expect(tx.encounterModuleState.update).not.toHaveBeenCalled();
+    });
+
+    it('throws (never a silent no-op) when the MEASUREMENTS EncounterModuleState row is missing -- a valid foundation-v1 encounter always has one', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue(null);
+
+      await expect(service.reconcileMeasurementsModule(tx as any, 'enc-1', 'COMPLETED', new Date())).rejects.toMatchObject({
+        response: { code: 'ENCOUNTER_MODULE_STATE_MISSING' },
+      });
+      expect(tx.encounterModuleState.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('findAccessibleEncounterForRead', () => {
+    it('returns the encounter row when the join (Encounter/Patient/WorkspaceMember) resolves', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ id: 'enc-1', status: 'IN_PROGRESS', clinicalDate: new Date('2026-08-04T12:00:00.000Z') }]);
+
+      const result = await service.findAccessibleEncounterForRead('user-1', 'patient-1', 'enc-1');
+
+      expect(result.id).toBe('enc-1');
+    });
+
+    it('returns 404 when the join resolves nothing -- covers cross-workspace access AND a structurally inconsistent row (Patient.workspaceId != Encounter.workspaceId)', async () => {
+      // El JOIN exige p."workspaceId" = e."workspaceId" -- un registro con esos
+      // valores distintos nunca matchea, exactamente igual que un acceso
+      // cross-workspace legítimo: ambos casos son indistinguibles desde afuera.
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await expect(service.findAccessibleEncounterForRead('user-1', 'patient-1', 'enc-1')).rejects.toThrow(NotFoundException);
     });
   });
 });
