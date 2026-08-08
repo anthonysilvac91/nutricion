@@ -9,6 +9,7 @@ function buildPrismaMock() {
     clinicalEncounter: { create: jest.fn(), updateMany: jest.fn() },
     encounterModuleState: { createMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
     assessment: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    nutritionalPlan: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
   };
   const prisma = {
     patient: { findFirst: jest.fn() },
@@ -270,6 +271,23 @@ describe('EncountersService', () => {
       });
     });
 
+    it('archives a DRAFT NutritionalPlan linked to the encounter being discarded, preserving snapshot/results/config (corte 4)', async () => {
+      tx.$queryRaw.mockResolvedValue([{ id: 'enc-1', status: 'IN_PROGRESS' }]);
+      tx.clinicalEncounter.updateMany.mockResolvedValue({ count: 1 });
+      tx.nutritionalPlan.updateMany.mockResolvedValue({ count: 1 });
+      prisma.$queryRaw.mockResolvedValue(ACCESS_ROW);
+      prisma.clinicalEncounter.findUnique.mockResolvedValue(fullDetailFixture({ status: 'DISCARDED' }));
+
+      await service.discard('user-1', 'patient-1', 'enc-1', { discardReason: 'No show' } as any);
+
+      // El updateMany solo toca status -- nunca sourceSnapshot, calculationResults,
+      // calculationMetadata, config, calculatedAt ni assessmentId/encounterId.
+      expect(tx.nutritionalPlan.updateMany).toHaveBeenCalledWith({
+        where: { encounterId: 'enc-1', status: 'DRAFT' },
+        data: { status: 'ARCHIVED' },
+      });
+    });
+
     it('a second discard on an already-DISCARDED encounter returns 409 ENCOUNTER_NOT_IN_PROGRESS', async () => {
       tx.$queryRaw.mockResolvedValue([{ id: 'enc-1', status: 'DISCARDED' }]);
 
@@ -324,6 +342,61 @@ describe('EncountersService', () => {
         response: { code: 'ENCOUNTER_MODULE_STATE_MISSING' },
       });
       expect(tx.encounterModuleState.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reconcilePlanningModule (corte 4)', () => {
+    it('updates PLANNING status/completedAt when applicability is not NOT_APPLICABLE', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue({ applicability: 'REQUIRED' });
+      const completedAt = new Date();
+
+      await service.reconcilePlanningModule(tx as any, 'enc-1', 'COMPLETED', completedAt);
+
+      expect(tx.encounterModuleState.findUnique).toHaveBeenCalledWith({
+        where: { encounterId_module: { encounterId: 'enc-1', module: 'PLANNING' } },
+      });
+      expect(tx.encounterModuleState.update).toHaveBeenCalledWith({
+        where: { encounterId_module: { encounterId: 'enc-1', module: 'PLANNING' } },
+        data: { status: 'COMPLETED', completedAt },
+      });
+    });
+
+    it('is a silent no-op when PLANNING applicability is NOT_APPLICABLE (pediatric profile)', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue({ applicability: 'NOT_APPLICABLE' });
+
+      await service.reconcilePlanningModule(tx as any, 'enc-1', 'IN_PROGRESS', null);
+
+      expect(tx.encounterModuleState.update).not.toHaveBeenCalled();
+    });
+
+    it('throws ENCOUNTER_MODULE_STATE_MISSING (never a silent no-op) when the PLANNING row is missing', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue(null);
+
+      await expect(service.reconcilePlanningModule(tx as any, 'enc-1', 'IN_PROGRESS', null)).rejects.toMatchObject({
+        response: { code: 'ENCOUNTER_MODULE_STATE_MISSING' },
+      });
+      expect(tx.encounterModuleState.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('requireModuleApplicable (corte 4)', () => {
+    it('resolves without throwing when the module is REQUIRED or OPTIONAL', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue({ applicability: 'REQUIRED' });
+      await expect(service.requireModuleApplicable(tx as any, 'enc-1', 'PLANNING' as any)).resolves.toBeUndefined();
+    });
+
+    it('throws 409 ENCOUNTER_MODULE_NOT_APPLICABLE when the module is NOT_APPLICABLE for this profile', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue({ applicability: 'NOT_APPLICABLE' });
+      await expect(service.requireModuleApplicable(tx as any, 'enc-1', 'PLANNING' as any)).rejects.toMatchObject({
+        response: { code: 'ENCOUNTER_MODULE_NOT_APPLICABLE' },
+      });
+    });
+
+    it('throws 409 ENCOUNTER_MODULE_STATE_MISSING when the module row does not exist', async () => {
+      tx.encounterModuleState.findUnique.mockResolvedValue(null);
+      await expect(service.requireModuleApplicable(tx as any, 'enc-1', 'PLANNING' as any)).rejects.toMatchObject({
+        response: { code: 'ENCOUNTER_MODULE_STATE_MISSING' },
+      });
     });
   });
 

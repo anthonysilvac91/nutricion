@@ -25,6 +25,7 @@ type EncounterRow = {
   discardReason: string | null;
   notes?: string | null;
   assessment?: { id: string } | null;
+  nutritionalPlan?: { id: string } | null;
 };
 
 @Injectable()
@@ -115,44 +116,93 @@ export class EncountersService {
   }
 
   /**
-   * Reconcilia EncounterModuleState(module=MEASUREMENTS) contra el estado real
-   * del Assessment asociado -- Assessment es la autoridad clínica,
-   * EncounterModuleState es solo una proyección de progreso (ver corte 2/3).
+   * Reconcilia EncounterModuleState(module) contra el estado real del recurso
+   * clínico asociado (Assessment para MEASUREMENTS, NutritionalPlan para
+   * PLANNING, etc.) -- ese recurso es siempre la autoridad clínica,
+   * EncounterModuleState es solo una proyección de progreso (ver corte 2/3/4).
    *
-   * Un ClinicalEncounter válido de foundation-v1 SIEMPRE nace con su fila
-   * EncounterModuleState.MEASUREMENTS (ver create() + foundation-flow.constants).
-   * Si esa fila no existe, no es un caso normal de negocio -- es una
-   * inconsistencia de datos, y silenciarla permitiría completar un Assessment
-   * (efecto clínico real) perdiendo para siempre la proyección de progreso de
+   * Un ClinicalEncounter válido de foundation-v1 SIEMPRE nace con las 9 filas
+   * EncounterModuleState (ver create() + foundation-flow.constants). Si la
+   * fila de este módulo no existe, no es un caso normal de negocio -- es una
+   * inconsistencia de datos, y silenciarla permitiría completar el recurso
+   * clínico (efecto real) perdiendo para siempre la proyección de progreso de
    * la consulta. Se trata como error: lanza y deja que la transacción llamante
-   * (createOrGet/complete) haga ROLLBACK completo, así el Assessment nunca
-   * queda a medio completar cuando el módulo no puede reconciliarse.
+   * haga ROLLBACK completo, así el recurso nunca queda a medio completar
+   * cuando el módulo no puede reconciliarse.
    *
    * applicability === NOT_APPLICABLE sí es un caso normal (no debería ocurrir
-   * con foundation-v1 hoy, pero esta llamada no se acopla rígidamente a esa
-   * suposición): es un no-op permitido, nunca un error.
+   * con foundation-v1 hoy para MEASUREMENTS, pero sí es el caso real de
+   * PLANNING en perfil PEDIATRIC): es un no-op permitido, nunca un error.
    */
+  private async reconcileModule(
+    tx: Prisma.TransactionClient,
+    encounterId: string,
+    module: EncounterModule,
+    status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED',
+    completedAt: Date | null,
+  ): Promise<void> {
+    const moduleState = await tx.encounterModuleState.findUnique({
+      where: { encounterId_module: { encounterId, module } },
+    });
+    if (!moduleState) {
+      throw new ConflictException({
+        code: 'ENCOUNTER_MODULE_STATE_MISSING',
+        message: `No se encontró el estado del módulo ${module} para esta consulta; no se puede reconciliar el progreso.`,
+      });
+    }
+    if (moduleState.applicability === 'NOT_APPLICABLE') return;
+
+    await tx.encounterModuleState.update({
+      where: { encounterId_module: { encounterId, module } },
+      data: { status, completedAt },
+    });
+  }
+
+  /** Reconciliación de MEASUREMENTS contra Assessment -- ver reconcileModule. */
   async reconcileMeasurementsModule(
     tx: Prisma.TransactionClient,
     encounterId: string,
     status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED',
     completedAt: Date | null,
   ): Promise<void> {
+    return this.reconcileModule(tx, encounterId, EncounterModule.MEASUREMENTS, status, completedAt);
+  }
+
+  /** Reconciliación de PLANNING contra NutritionalPlan (corte 4) -- ver reconcileModule. */
+  async reconcilePlanningModule(
+    tx: Prisma.TransactionClient,
+    encounterId: string,
+    status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED',
+    completedAt: Date | null,
+  ): Promise<void> {
+    return this.reconcileModule(tx, encounterId, EncounterModule.PLANNING, status, completedAt);
+  }
+
+  /**
+   * Corte 4: gate de applicability para mutaciones encounter-scoped que, a
+   * diferencia de MEASUREMENTS (siempre REQUIRED en foundation-v1), sí pueden
+   * ser NOT_APPLICABLE para el perfil actual (PLANNING en PEDIATRIC). Nunca
+   * depende de un campo clínico del recurso (ej. Assessment.populationGroup)
+   * para decidir esto -- la única autoridad de applicability es
+   * ClinicalEncounter + EncounterModuleState. Una fila de módulo inexistente
+   * es la misma inconsistencia de datos que en reconcileModule.
+   */
+  async requireModuleApplicable(tx: Prisma.TransactionClient, encounterId: string, module: EncounterModule): Promise<void> {
     const moduleState = await tx.encounterModuleState.findUnique({
-      where: { encounterId_module: { encounterId, module: EncounterModule.MEASUREMENTS } },
+      where: { encounterId_module: { encounterId, module } },
     });
     if (!moduleState) {
       throw new ConflictException({
         code: 'ENCOUNTER_MODULE_STATE_MISSING',
-        message: 'No se encontró el estado del módulo MEASUREMENTS para esta consulta; no se puede reconciliar el progreso.',
+        message: `No se encontró el estado del módulo ${module} para esta consulta.`,
       });
     }
-    if (moduleState.applicability === 'NOT_APPLICABLE') return;
-
-    await tx.encounterModuleState.update({
-      where: { encounterId_module: { encounterId, module: EncounterModule.MEASUREMENTS } },
-      data: { status, completedAt },
-    });
+    if (moduleState.applicability === 'NOT_APPLICABLE') {
+      throw new ConflictException({
+        code: 'ENCOUNTER_MODULE_NOT_APPLICABLE',
+        message: `El módulo ${module} no aplica para el perfil de esta consulta.`,
+      });
+    }
   }
 
   // POST /patients/:patientId/encounters
@@ -282,9 +332,11 @@ export class EncountersService {
 
     const encounter = await this.prisma.clinicalEncounter.findUnique({
       where: { id: encounterId },
-      // select mínimo del Assessment asociado -- solo su id, nunca sus
-      // MeasurementRecord/CalculatedResult aquí (evitar N+1 / payload innecesario).
-      include: { modules: true, assessment: { select: { id: true } } },
+      // select mínimo del Assessment/NutritionalPlan asociados -- solo su id,
+      // nunca MeasurementRecord/CalculatedResult ni sourceSnapshot/
+      // calculationResults aquí (evitar N+1 / payload innecesario). El
+      // detalle completo del plan se obtiene vía GET .../encounter/:id/plan.
+      include: { modules: true, assessment: { select: { id: true } }, nutritionalPlan: { select: { id: true } } },
     });
     if (!encounter) throw new NotFoundException('Encounter not found');
 
@@ -311,6 +363,17 @@ export class EncountersService {
       // resultados clínicos intactos. EncounterModuleState no se toca: el
       // Encounter ya queda DISCARDED, no hay progreso clínico que inventar.
       await tx.assessment.updateMany({
+        where: { encounterId, status: 'DRAFT' },
+        data: { status: 'ARCHIVED' },
+      });
+
+      // Corte 4: mismo tratamiento para un NutritionalPlan DRAFT ligado a esta
+      // consulta -- se archiva (nunca se borra), preservando encounterId,
+      // assessmentId, sourceSnapshot, calculationResults/calculationMetadata,
+      // config y calculatedAt intactos. Si el Plan ya está FINALIZED, este
+      // updateMany no lo toca (el filtro exige status='DRAFT') -- queda como
+      // evidencia de lo que ocurrió antes del descarte, sin modificarse.
+      await tx.nutritionalPlan.updateMany({
         where: { encounterId, status: 'DRAFT' },
         data: { status: 'ARCHIVED' },
       });
@@ -388,6 +451,7 @@ export class EncountersService {
       notes: row.notes ?? null,
       responsibleProfessionalId: row.responsibleProfessionalId,
       assessmentId: row.assessment?.id ?? null,
+      nutritionalPlanId: row.nutritionalPlan?.id ?? null,
       modules: modules.map((m) => ({
         module: m.module,
         applicability: m.applicability,

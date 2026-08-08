@@ -8,5 +8,9 @@ import { CalculationEngineModule } from '../calculation-engine/calculation-engin
     imports: [CalculationEngineModule],
     controllers: [PlansController],
     providers: [PlansService, PlanCalculationService],
+    // Se exportan además de PlansController para que EncounterPlanService (corte 4) los
+    // reutilice directamente -- misma autoridad clínica de planificación, sin instanciar
+    // una segunda copia.
+    exports: [PlansService, PlanCalculationService],
 })
 export class PlansModule {}
